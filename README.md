@@ -74,8 +74,8 @@ Ollama is the local engine that runs the models. **Download it from <https://oll
 | OS | How |
 | --- | --- |
 | **Windows** | Get the installer from <https://ollama.com/download/windows>, **or** in a terminal: `winget install Ollama.Ollama` |
-| **macOS** | Download the `.dmg` from <https://ollama.com/download/mac>, **or**: `brew install --cask ollama` |
-| **Linux** | `curl -fsSL https://ollama.com/install.sh \| sh` |
+| **macOS(not supported yet)** | Download the `.dmg` from <https://ollama.com/download/mac>, **or**: `brew install --cask ollama` |
+| **Linux(not supported yet)** | `curl -fsSL https://ollama.com/install.sh \| sh` |
 
 Verify:
 
