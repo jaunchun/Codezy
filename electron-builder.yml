@@ -17,10 +17,15 @@ win:
     - target: nsis
       arch:
         - x64
+# One-click installer: double-click = UPDATE. It always installs to the
+# standard per-user location (%LOCALAPPDATA%\Programs\CODEZY), finds any
+# previous install through the com.kajtg.codezy uninstall key, removes it
+# first and replaces it in place — there is no directory page to mis-click
+# into creating a second copy. App data (%APPDATA%\CODEZY: settings,
+# sessions) is never touched. The in-app updater runs the same exe with /S.
 nsis:
-  oneClick: false
+  oneClick: true
   perMachine: false
-  allowToChangeInstallationDirectory: true
   createDesktopShortcut: always
   createStartMenuShortcut: true
   shortcutName: CODEZY

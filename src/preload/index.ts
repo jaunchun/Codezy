@@ -24,7 +24,8 @@ const api: CodezyApi = {
     save: (s: Session) => ipcRenderer.invoke('sessions:save', s),
     create: (projectId: string | null, title?: string) =>
       ipcRenderer.invoke('sessions:create', projectId, title),
-    delete: (id: string) => ipcRenderer.invoke('sessions:delete', id)
+    delete: (id: string) => ipcRenderer.invoke('sessions:delete', id),
+    search: (q: string) => ipcRenderer.invoke('sessions:search', q)
   },
   models: {
     list: () => ipcRenderer.invoke('models:list')
@@ -54,7 +55,10 @@ const api: CodezyApi = {
   edits: {
     apply: (sessionId: string, edits: import('../shared/edits').FileEdit[]) =>
       ipcRenderer.invoke('edits:apply', sessionId, edits),
-    undo: (sessionId: string) => ipcRenderer.invoke('edits:undo', sessionId)
+    undo: (sessionId: string) => ipcRenderer.invoke('edits:undo', sessionId),
+    list: (sessionId: string) => ipcRenderer.invoke('edits:list', sessionId),
+    restore: (sessionId: string, backupId: string) =>
+      ipcRenderer.invoke('edits:restore', sessionId, backupId)
   },
   usage: {
     stats: (range: import('../shared/usage').UsageRange) => ipcRenderer.invoke('usage:stats', range)
@@ -63,7 +67,8 @@ const api: CodezyApi = {
     query: (q: string) => ipcRenderer.invoke('search:query', q)
   },
   git: {
-    diff: (sessionId: string, pathspec?: string) => ipcRenderer.invoke('git:diff', sessionId, pathspec)
+    diff: (sessionId: string, pathspec?: string) => ipcRenderer.invoke('git:diff', sessionId, pathspec),
+    status: (sessionId: string, folder: string) => ipcRenderer.invoke('git:status', sessionId, folder)
   },
   files: {
     list: (sessionId: string, query: string) => ipcRenderer.invoke('files:list', sessionId, query),
@@ -71,16 +76,22 @@ const api: CodezyApi = {
     ingest: (paths: string[]) => ipcRenderer.invoke('files:import', paths),
     saveDump: (sessionId: string, files: { path: string; content: string }[]) =>
       ipcRenderer.invoke('files:saveDump', sessionId, files),
+    applyBlock: (sessionId: string, path: string, content: string) =>
+      ipcRenderer.invoke('files:applyBlock', sessionId, path, content),
     open: (path: string) => ipcRenderer.invoke('files:open', path),
     show: (path: string) => ipcRenderer.invoke('files:show', path)
   },
   ide: {
-    tree: (sessionId: string) => ipcRenderer.invoke('ide:tree', sessionId),
+    tree: (sessionId: string, showIgnored?: boolean) =>
+      ipcRenderer.invoke('ide:tree', sessionId, showIgnored),
     read: (sessionId: string, path: string) => ipcRenderer.invoke('ide:read', sessionId, path),
     write: (sessionId: string, path: string, content: string) =>
       ipcRenderer.invoke('ide:write', sessionId, path, content),
     create: (sessionId: string, path: string, dir: boolean) =>
-      ipcRenderer.invoke('ide:create', sessionId, path, dir)
+      ipcRenderer.invoke('ide:create', sessionId, path, dir),
+    rename: (sessionId: string, from: string, to: string) =>
+      ipcRenderer.invoke('ide:rename', sessionId, from, to),
+    delete: (sessionId: string, path: string) => ipcRenderer.invoke('ide:delete', sessionId, path)
   },
   images: {
     dataUrl: (path: string) => ipcRenderer.invoke('images:dataUrl', path),
@@ -108,6 +119,26 @@ const api: CodezyApi = {
     version: () => ipcRenderer.invoke('app:version'),
     openExternal: (url: string) => ipcRenderer.invoke('app:openExternal', url),
     openTerminal: () => ipcRenderer.invoke('app:openTerminal')
+  },
+  update: {
+    check: () => ipcRenderer.invoke('update:check'),
+    download: () => ipcRenderer.invoke('update:download'),
+    apply: () => ipcRenderer.invoke('update:apply'),
+    onProgress: (cb) => {
+      const listener = (_e: unknown, p: import('../shared/api').UpdateProgress) => cb(p)
+      ipcRenderer.on('update:progress', listener)
+      return () => ipcRenderer.removeListener('update:progress', listener)
+    },
+    openRelease: (url: string) => ipcRenderer.invoke('update:openRelease', url)
+  },
+  mcp: {
+    list: () => ipcRenderer.invoke('mcp:list'),
+    probe: (cfg: unknown) => ipcRenderer.invoke('mcp:probe', cfg),
+    save: (servers: unknown[]) => ipcRenderer.invoke('mcp:save', servers)
+  },
+  tasks: {
+    list: () => ipcRenderer.invoke('tasks:list'),
+    stop: (uid: string) => ipcRenderer.invoke('tasks:stop', uid)
   }
 }
 

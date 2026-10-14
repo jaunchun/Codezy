@@ -73,16 +73,22 @@ export async function learnFromExchange(
       : `${HEADER}\n\n`
     let next = base + fresh.map((f) => `- ${f}`).join('\n') + '\n'
 
-    // keep the file bounded: trim oldest bullets first, never the header
+    // keep the file bounded: drop the OLDEST top-level bullets — the exact
+    // shape learn itself appends — and pass every other line through
+    // untouched. Headings, paragraphs and indented items the user wrote by
+    // hand in Settings must never be trimmed away.
     if (next.length > MAX_MEMORY_CHARS) {
       const lines = next.split('\n')
-      const head = lines[0] === HEADER ? lines.slice(0, 2) : []
-      const bullets = lines.filter((l) => l.startsWith('- '))
-      let kept = bullets
-      while (kept.join('\n').length + head.join('\n').length > MAX_MEMORY_CHARS && kept.length > 1) {
-        kept = kept.slice(1)
+      const bulletIdx: number[] = []
+      lines.forEach((l, i) => {
+        if (l.startsWith('- ')) bulletIdx.push(i)
+      })
+      let removed = 0
+      while (next.length > MAX_MEMORY_CHARS && removed < bulletIdx.length) {
+        lines.splice(bulletIdx[removed] - removed, 1) // shift-adjusted after earlier removals
+        removed++
+        next = lines.join('\n')
       }
-      next = [...head, ...kept].join('\n') + '\n'
     }
 
     writeMemory(next)

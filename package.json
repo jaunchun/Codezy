@@ -1,6 +1,7 @@
 {
   "name": "codezy",
-  "version": "2.3.0",
+  "version": "3.1.3",
+  "private": true,
   "description": "CODEZY — Claude Code style desktop client for local models",
   "main": "out/main/index.js",
   "bin": {

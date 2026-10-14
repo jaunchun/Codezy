@@ -60,13 +60,86 @@ export default function Palette() {
       },
       { id: 'a-focus', group: 'Actions', label: 'Focus the composer', hint: 'Esc from here', run: () => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus() },
       { id: 'a-settings', group: 'Actions', label: 'Open settings', hint: 'Ctrl+,', run: () => s.setSettingsOpen(true) },
+      {
+        id: 'a-mcp',
+        group: 'Actions',
+        label: 'MCP servers — status, tools & failures',
+        hint: 'Settings ▸ MCP servers',
+        run: () => s.openSettings('MCP servers')
+      },
       { id: 'a-usage', group: 'Actions', label: 'Usage dashboard', hint: 'Ctrl+U', run: () => s.setUsageOpen(true) },
+      { id: 'a-tasks', group: 'Actions', label: 'Background tasks', hint: 'agent runs', run: () => s.setTasksOpen(true) },
+      {
+        id: 'a-history',
+        group: 'Actions',
+        label: 'Edit history — restore a backup',
+        hint: '/history',
+        run: () => s.setHistoryOpen(true)
+      },
       { id: 'a-keys', group: 'Actions', label: 'Keyboard shortcuts', hint: 'Ctrl+/', run: () => s.toggleShortcuts() },
+      {
+        id: 'a-cowork',
+        group: 'Actions',
+        label: s.ideOpen ? 'Close the cowork editor' : 'Open the cowork editor',
+        hint: 'Ctrl+E',
+        run: () => s.toggleIde()
+      },
+      {
+        id: 'a-find',
+        group: 'Actions',
+        label: 'Find in this chat',
+        hint: 'Ctrl+F',
+        run: () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true }))
+      },
+      {
+        id: 'a-search',
+        group: 'Actions',
+        label: 'Search every chat — full-text across sessions',
+        hint: 'Ctrl+Shift+F',
+        run: () => s.setSearchOpen(true)
+      },
+      {
+        id: 'a-copy',
+        group: 'Actions',
+        label: 'Copy the whole conversation',
+        run: () => void s.copyTranscript()
+      },
       {
         id: 'a-export',
         group: 'Actions',
         label: 'Export this chat as markdown',
         run: () => s.activeId && void s.exportSession(s.activeId)
+      },
+      {
+        id: 'a-export-all',
+        group: 'Actions',
+        label: 'Export every chat as one markdown file',
+        run: () => void s.exportAll()
+      },
+      {
+        id: 'a-archive',
+        group: 'Actions',
+        label: 'Archive this chat',
+        run: () => s.activeId && void s.toggleArchive(s.activeId)
+      },
+      {
+        id: 'a-font-up',
+        group: 'Actions',
+        label: `Bigger text (${(s.settings?.fontSize ?? 14) + 1}px)`,
+        run: () => void s.updateSettings({ fontSize: Math.min(20, (s.settings?.fontSize ?? 14) + 1) })
+      },
+      {
+        id: 'a-font-down',
+        group: 'Actions',
+        label: `Smaller text (${Math.max(12, (s.settings?.fontSize ?? 14) - 1)}px)`,
+        run: () => void s.updateSettings({ fontSize: Math.max(12, (s.settings?.fontSize ?? 14) - 1) })
+      },
+      {
+        id: 'a-density',
+        group: 'Actions',
+        label: `Density: ${(s.settings?.density ?? 'cozy') === 'cozy' ? 'compact' : 'cozy'} (now ${s.settings?.density ?? 'cozy'})`,
+        run: () =>
+          void s.updateSettings({ density: (s.settings?.density ?? 'cozy') === 'cozy' ? 'compact' : 'cozy' })
       },
       { id: 'a-clear', group: 'Actions', label: 'Clear the chat', run: () => void s.send('/clear') },
       { id: 'a-theme', group: 'Actions', label: `Switch theme to ${themeNext}`, run: () => void s.updateSettings({ theme: themeNext }) },
@@ -78,7 +151,7 @@ export default function Palette() {
       id: `c-${x.id}`,
       group: 'Chats',
       label: x.title,
-      hint: new Date(x.updatedAt).toLocaleString(),
+      hint: `${new Date(x.updatedAt).toLocaleString()}${x.archived ? ' · archived' : ''}`,
       run: () => s.setActive(x.id)
     }))
 
@@ -92,7 +165,7 @@ export default function Palette() {
 
     return [...actions, ...chats, ...commands]
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, s.sessions, s.settings, s.sidebarOpen, s.streaming, s.activeId])
+  }, [open, s.sessions, s.settings, s.sidebarOpen, s.streaming, s.activeId, s.ideOpen])
 
   // substring match, ranked: label prefix > label contains > hint contains
   const matches = useMemo(() => {

@@ -16,10 +16,12 @@ import {
   IconPencil,
   IconQuote,
   IconRefresh,
+  IconTrash,
   IconX
 } from './Icons'
 import EditCard from './EditCard'
 import UsagePanel from './UsageModal'
+import TasksPanel from './TasksPanel'
 
 const stamp = (ts: number) =>
   new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -32,11 +34,29 @@ const STARTERS = [
   { label: 'Plan a project', desc: 'structure before code', text: 'Help me plan this project: ' }
 ]
 
+/** lang → file extension for the save/apply default names. */
+const LANG_EXT: Record<string, string> = {
+  ts: 'ts', tsx: 'tsx', js: 'js', jsx: 'jsx', mjs: 'mjs', cjs: 'cjs',
+  py: 'py', rb: 'rb', go: 'go', rs: 'rs', java: 'java', kt: 'kt',
+  c: 'c', h: 'h', cpp: 'cpp', cs: 'cs', swift: 'swift', php: 'php',
+  html: 'html', htm: 'html', css: 'css', scss: 'scss', less: 'less',
+  json: 'json', yaml: 'yaml', yml: 'yml', toml: 'toml', ini: 'ini', xml: 'xml', svg: 'svg',
+  sh: 'sh', bash: 'sh', zsh: 'sh', ps1: 'ps1', powershell: 'ps1', bat: 'bat', cmd: 'bat',
+  sql: 'sql', md: 'md', markdown: 'md', txt: 'txt', dockerfile: 'dockerfile', lua: 'lua'
+}
+const snippetName = (lang: string) => `snippet.${LANG_EXT[lang.toLowerCase()] ?? 'txt'}`
+
 /** A code block with the language tag, line numbers and copy feedback.
- *  Starts COLLAPSED (faded ~3-line preview) — click to expand the full code. */
-function CodeBlock({ lang, code }: { lang: string; code: string }) {
+ *  Starts COLLAPSED (faded ~3-line preview) — click to expand the full code.
+ *  v3.1: **save** anywhere, and **apply into the linked folder** (backed up
+ *  like every edit — /undo reverts it) when the chat has a folder linked.
+ *  Exported for batch26 tests. */
+export function CodeBlock({ lang, code, sessionId }: { lang: string; code: string; sessionId: string | null }) {
   const [copied, setCopied] = useState(false)
   const [open, setOpen] = useState(false)
+  const [applyOpen, setApplyOpen] = useState(false)
+  const [applyPath, setApplyPath] = useState('')
+  const [busy, setBusy] = useState(false)
   let html: string | null = null
   try {
     if (hljs.getLanguage(lang)) html = hljs.highlight(code, { language: lang }).value
@@ -44,11 +64,39 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
     html = null
   }
   const lines = code.split('\n')
+  // read (not subscribe): linking a folder re-renders ChatView, which
+  // re-renders this block — no per-block store subscription during streaming
+  const roots = sessionId ? (useApp.getState().sessions.find((x) => x.id === sessionId)?.linkedFolders ?? []) : []
   const copy = (e: React.MouseEvent) => {
     e.stopPropagation()
     void navigator.clipboard.writeText(code).catch(() => undefined)
     setCopied(true)
     window.setTimeout(() => setCopied(false), 1500)
+  }
+  const save = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    void window.codezy.dialog
+      .saveText(snippetName(lang), code)
+      .then((p) => {
+        if (p) useApp.getState().addNotice(`Saved the block to ${p}`)
+      })
+      .catch(() => undefined)
+  }
+  const apply = async () => {
+    if (!sessionId || busy) return
+    const target = applyPath.trim()
+    if (!target) return
+    setBusy(true)
+    try {
+      await window.codezy.files.applyBlock(sessionId, target, code)
+      useApp.getState().addNotice(`Wrote ${target} — /undo reverts this write`)
+      setApplyOpen(false)
+      setApplyPath('')
+    } catch (err) {
+      useApp.getState().addNotice(`Could not write ${target}: ${err instanceof Error ? err.message : err}`, 'error')
+    } finally {
+      setBusy(false)
+    }
   }
   return (
     <div
@@ -67,12 +115,31 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
         <span>
           {lang.toUpperCase()}
           {lines.length > 1 ? ` · ${lines.length} lines` : ''}
+          {` · ${new Blob([code]).size} B`}
         </span>
         <span className="code-tools">
           <button className="copy" title="Copy the whole block" onClick={copy}>
             <IconCopy style={{ width: 12, height: 12 }} />
             {copied ? 'copied' : 'copy'}
           </button>
+          <button className="copy" title="Save the block as a file…" onClick={save}>
+            <IconDownload style={{ width: 12, height: 12 }} />
+            save
+          </button>
+          {sessionId && roots.length > 0 && (
+            <button
+              className="copy"
+              title="Write the block into the linked folder — backed up like every edit, /undo reverts it"
+              onClick={(e) => {
+                e.stopPropagation()
+                setApplyPath((p) => p || snippetName(lang))
+                setApplyOpen((v) => !v)
+              }}
+            >
+              <IconPencil style={{ width: 12, height: 12 }} />
+              apply
+            </button>
+          )}
           <button
             className="copy"
             title={open ? 'Collapse' : 'Expand the full code'}
@@ -85,6 +152,28 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
           </button>
         </span>
       </header>
+      {applyOpen && (
+        <div className="code-apply" onClick={(e) => e.stopPropagation()}>
+          <input
+            type="text"
+            autoFocus
+            aria-label="Path inside the linked folder"
+            placeholder={`path inside the linked folder (e.g. src/${snippetName(lang)})`}
+            value={applyPath}
+            onChange={(e) => setApplyPath(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void apply()
+              if (e.key === 'Escape') setApplyOpen(false)
+            }}
+          />
+          <button className="copy" disabled={busy || !applyPath.trim()} onClick={() => void apply()}>
+            {busy ? 'writing…' : 'write'}
+          </button>
+          <button className="copy" aria-label="Cancel" onClick={() => setApplyOpen(false)}>
+            ✕
+          </button>
+        </div>
+      )}
       <div className="code-body">
         {lines.length > 1 && (
           <div className="line-nums" aria-hidden>
@@ -243,8 +332,14 @@ function FileDumpCard({
   )
 }
 
+/** "142ms" / "1.4s" for a tool step's wall time. */
+const fmtMs = (ms: number): string => (ms < 1000 ? `${Math.max(1, Math.round(ms))}ms` : `${(ms / 1000).toFixed(1)}s`)
+/** "612 B" / "4.2 KB" / "1.1 MB" for a tool result's size. */
+const fmtSize = (n: number): string =>
+  n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`
+
 /** Persistent record of the agent's tool steps — collapsed gray line, expands on click. */
-function TraceLine({ trace }: { trace: { name: string; ok: boolean }[] }) {
+function TraceLine({ trace }: { trace: { name: string; ok: boolean; ms?: number; size?: number }[] }) {
   const [open, setOpen] = useState(false)
   const failed = trace.filter((t) => !t.ok).length
   return (
@@ -261,6 +356,12 @@ function TraceLine({ trace }: { trace: { name: string; ok: boolean }[] }) {
             <li key={`${t.name}-${i}`} className={t.ok ? undefined : 'bad'}>
               <span aria-hidden>{t.ok ? '✓' : '✕'}</span>
               {t.name.replace(/_/g, ' ')}
+              {/* v3.1 visibility: which MCP server + how long + how big */}
+              {t.name.startsWith('mcp__') ? (
+                <span className="trace-chip mcp">{t.name.split('__')[1]}</span>
+              ) : null}
+              {t.ms != null ? <span className="trace-chip">{fmtMs(t.ms)}</span> : null}
+              {t.size != null ? <span className="trace-chip">{fmtSize(t.size)}</span> : null}
             </li>
           ))}
         </ol>
@@ -269,7 +370,7 @@ function TraceLine({ trace }: { trace: { name: string; ok: boolean }[] }) {
   )
 }
 
-function AssistantText({ text }: { text: string }) {
+function AssistantText({ text, sessionId }: { text: string; sessionId: string | null }) {
   // the ===FILE edit blocks are rendered by the styled EditCard, not markdown
   const prose = stripEditBlocks(text)
   if (!prose.trim()) return null
@@ -284,7 +385,7 @@ function AssistantText({ text }: { text: string }) {
             const raw = String(children ?? '').replace(/\n$/, '')
             const lang = /language-(\w+)/.exec(className ?? '')?.[1]
             if (!lang) return <code className="inline">{children}</code>
-            return <CodeBlock lang={lang} code={raw} />
+            return <CodeBlock lang={lang} code={raw} sessionId={sessionId} />
           }
         }}
       >
@@ -317,14 +418,49 @@ function v2ActivityLabel(a: { name: string; args: Record<string, unknown>; outco
     case 'todo_write':
       return 'updating todos…'
     default:
+      // MCP tools arrive namespaced as mcp__<server>__<tool> (v3)
+      if (a.name.startsWith('mcp__')) {
+        const [, server, tool] = a.name.split('__')
+        return `calling ${server}/${tool}…`
+      }
       return `${a.name}…`
   }
 }
 
-/** Copy / quote / branch / regenerate / edit-and-resend — on message hover. */
+/** The three things people ask a fresh reply for — one tap, no typing. */
+const FOLLOWUPS: { label: string; text: string }[] = [
+  { label: 'Continue', text: 'Continue - pick up exactly where you stopped.' },
+  { label: 'Explain', text: 'Explain what you just did and why, in a few short lines.' },
+  { label: 'Review it', text: 'Review what you just changed like a code reviewer: bugs, edge cases, missing tests.' },
+  { label: 'Add tests', text: 'What should be tested for the change you just made? Add the tests if the project has a test setup.' }
+]
+
+/** Quick follow-up chips under the newest reply (idle only — never while streaming). */
+function QuickFollow() {
+  const streaming = useApp((s) => s.streaming)
+  const send = useApp((s) => s.send)
+  return (
+    <div className="followups" role="group" aria-label="Quick follow-ups">
+      {FOLLOWUPS.map((f) => (
+        <button key={f.label} className="followup" disabled={streaming} onClick={() => void send(f.text)}>
+          {f.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** Copy / quote / branch / regenerate / edit-and-resend - on message hover. */
 function MsgActions({ message, canRegen }: { message: ChatMessage; canRegen: boolean }) {
   const s = useApp()
   const isUser = message.role === 'user'
+  // delete is destructive → first click arms it, a second one commits
+  const [armed, setArmed] = useState(false)
+  useEffect(() => {
+    if (!armed) return
+    const t = window.setTimeout(() => setArmed(false), 2600)
+    return () => window.clearTimeout(t)
+  }, [armed])
   const copy = () => {
     const prose = isUser ? message.content : stripEditBlocks(message.content).trim() || message.content
     void navigator.clipboard.writeText(prose).catch(() => undefined)
@@ -381,6 +517,28 @@ function MsgActions({ message, canRegen }: { message: ChatMessage; canRegen: boo
           <IconPencil />
         </button>
       )}
+      {!s.streaming && (
+        <button
+          className={`act-btn${armed ? ' armed' : ''}`}
+          data-tip={
+            armed
+              ? 'Click again to delete this message and everything after it'
+              : 'Delete this message and everything after it'
+          }
+          aria-label="Delete from here"
+          onClick={(e) => {
+            e.stopPropagation()
+            if (!armed) {
+              setArmed(true)
+              return
+            }
+            setArmed(false)
+            void s.deleteFrom(message.id)
+          }}
+        >
+          <IconTrash />
+        </button>
+      )}
     </div>
   )
 }
@@ -393,7 +551,7 @@ const HighlightCtor = (globalThis as unknown as { Highlight?: new (...ranges: Ra
 const supportsFind = !!cssHighlights && typeof HighlightCtor === 'function'
 
 export default function ChatView() {
-  const { sessions, activeId, streamText, streaming, usageOpen, setComposerDraft, v2Activity } = useApp()
+  const { sessions, activeId, streamText, streaming, usageOpen, tasksOpen, setComposerDraft, v2Activity, scrollTarget } = useApp()
   const session = sessions.find((x) => x.id === activeId)
   const bottom = useRef<HTMLDivElement>(null)
   const chatRef = useRef<HTMLDivElement>(null)
@@ -478,6 +636,8 @@ export default function ChatView() {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'f') {
         if (!supportsFind) return
+        // the cowork editor owns Ctrl+F while focus is inside it
+        if (document.activeElement?.closest('.ide-pane')) return
         e.preventDefault()
         setFindOpen(true)
         setFindIdx(0)
@@ -501,7 +661,7 @@ export default function ChatView() {
     // instant while tokens stream in: smooth animations can't keep pace with
     // 40 tokens/sec and would leave the view lagging behind the text
     if (stick.current) bottom.current?.scrollIntoView({ behavior: streamText ? 'auto' : 'smooth' })
-  }, [session?.messages.length, streamText, activeId, usageOpen])
+  }, [session?.messages.length, streamText, activeId, usageOpen, tasksOpen])
 
   // a generation just started (you sent something) → follow it from the start
   useEffect(() => {
@@ -516,6 +676,27 @@ export default function ChatView() {
     stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 90
     setShowJump(!stick.current)
   }
+
+  // cross-chat search (v3.1): a picked hit sets scrollTarget — scroll the
+  // message into view and flash it, then clear the target so re-renders don't
+  // re-trigger the jump
+  const [flashId, setFlashId] = useState<string | null>(null)
+  useEffect(() => {
+    if (!scrollTarget || scrollTarget.sessionId !== activeId) return
+    const want = scrollTarget.messageId
+    const el = [...document.querySelectorAll<HTMLElement>('[data-mid]')].find((n) => n.dataset.mid === want)
+    el?.scrollIntoView({ block: 'center', behavior: 'auto' })
+    setFlashId(want)
+    const t = window.setTimeout(() => useApp.getState().clearScrollTarget(), 500)
+    return () => window.clearTimeout(t)
+  }, [scrollTarget, activeId])
+  // the ring fades on its own clock — decoupled from the target so clearing
+  // scrollTarget above can never cancel the fade
+  useEffect(() => {
+    if (!flashId) return
+    const t = window.setTimeout(() => setFlashId(null), 2200)
+    return () => window.clearTimeout(t)
+  }, [flashId])
 
   const jump = () => {
     stick.current = true
@@ -594,7 +775,7 @@ export default function ChatView() {
             .filter((m) => !m.hidden)
             .map((m: ChatMessage) =>
             m.role === 'user' ? (
-              <div key={m.id} className="msg-row user">
+              <div key={m.id} className={`msg-row user${flashId === m.id ? ' flash' : ''}`} data-mid={m.id}>
                 <div className="msg">
                   {m.files?.length ? (
                     <div
@@ -624,15 +805,16 @@ export default function ChatView() {
                 </div>
               </div>
             ) : (
-              <div key={m.id} className="msg-row">
+              <div key={m.id} className={`msg-row${flashId === m.id ? ' flash' : ''}`} data-mid={m.id}>
                 <div className="msg">
                   {m.trace?.length ? <TraceLine trace={m.trace} /> : null}
-                  <AssistantText text={m.content} />
+                  <AssistantText text={m.content} sessionId={session?.id ?? null} />
                   <div className="stamp">
                     {stamp(m.ts)}
                     {m.model ? ` · ${m.model}` : ''}
                   </div>
                   <MsgActions message={m} canRegen={m.id === lastAssistantId && !streaming} />
+                  {m.id === lastAssistantId && !streaming && m.content.trim() && <QuickFollow />}
                   <EditCard message={m} />
                   <FileDumpCard
                     content={m.content}
@@ -648,7 +830,7 @@ export default function ChatView() {
         {streaming && streamText && (
           <div className="msg-row">
             <div className="msg">
-              <AssistantText text={streamText} />
+              <AssistantText text={streamText} sessionId={session?.id ?? null} />
               {proposing ? (
                 <div className="activity">
                   <span className="act-dot" aria-hidden />
@@ -676,6 +858,9 @@ export default function ChatView() {
             <IconChevronDown style={{ width: 15, height: 15 }} />
           </button>
         )}
+
+        {/* batch30 — the agent's background children (kill / read output) */}
+        {tasksOpen && <TasksPanel />}
 
         {/* /usage → the stats dashboard as a small window inside the chat */}
         {usageOpen && <UsagePanel />}

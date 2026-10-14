@@ -59,8 +59,13 @@ export function wrapPlain(text, w) {
 // One pass, alternation order matters: strings first (so "http://x" inside a
 // string doesn't look like a comment), then comments, numbers, keywords.
 
+// Comments: `//` anywhere (the dominant fence languages), `#`/`--`/`;` only
+// when they START the line — mid-line they're ordinary characters (`#fff`,
+// `i--`, `x = 1; y = 2`), and a comment regex that eats to EOL also kills the
+// trailing keyword highlighting. `#` gets a hex-color exception so CSS colors
+// stay colors while `# comment` and `#include` still highlight.
 const HL_RE =
-  /("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|(\/\/[^\n]*|#[^\n]*|--[^\n]*$|;[^\n]*$)|(\b\d+(?:\.\d+)?\b)|\b(const|let|var|function|return|if|else|for|while|class|new|import|from|export|await|async|def|elif|lambda|True|False|None|null|undefined|true|false|self|this|fn|pub|use|type|interface|struct|impl|match|case|switch|break|continue|try|catch|except|raise|print|require|module|package|static|public|private|void|int|string|bool|float)\b/g
+  /("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|(\/\/[^\n]*|#(?![0-9a-fA-F]{3,8}\b)[^\n]*$|^[ \t]*--[^\n]*$|^[ \t]*;[^\n]*$)|(\b\d+(?:\.\d+)?\b)|\b(const|let|var|function|return|if|else|for|while|class|new|import|from|export|await|async|def|elif|lambda|True|False|None|null|undefined|true|false|self|this|fn|pub|use|type|interface|struct|impl|match|case|switch|break|continue|try|catch|except|raise|print|require|module|package|static|public|private|void|int|string|bool|float)\b/g
 
 /** Colors one line of code. Input must be plain (no ANSI). */
 function hl(line) {
@@ -78,7 +83,7 @@ function hl(line) {
 /** bold / italic / inline code / links — single non-overlapping pass. */
 function inline(s) {
   return s.replace(
-    /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*]+)\*|_([^_]+)_|\[([^\]]+)\]\(([^)]+)\)/g,
+    /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*]+)\*|(?<![\w])_([^_]+)_(?![\w])|\[([^\]]+)\]\(([^)]+)\)/g,
     (m, code, b1, b2, i1, i2, ltext, lhref) => {
       if (code) return CODE_FG + code + '\x1b[39m'
       if (b1 || b2) return BOLD + (b1 ?? b2) + '\x1b[22m'

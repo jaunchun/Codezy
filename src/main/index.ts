@@ -25,26 +25,33 @@ import {
   readMemory,
   saveProjects,
   saveSession,
+  searchSessions,
   writeMemory
 } from './store'
 import { listOllamaModelDetails, listOpenAIModels, pingOllama, streamChat, contextSizeFor } from './ollama'
 import { buildMessages, fileTree } from './prompt'
 import { webSearch } from './search'
-import { gitDiff } from './git'
+import { gitDiff, gitStatus } from './git'
 import { learnFromExchange } from './learn'
-import { applyEdits, undoLast } from './edits'
+import { applyCodeBlock, applyEdits, listBackups, restoreBackup, undoLast } from './edits'
 import {
   IMAGE_MIME,
   ideCreate,
+  ideDelete,
   ideRead,
+  ideRename,
+  ideSaveWouldTruncate,
   ideTree,
   ideWrite,
   isImagePath,
   listFiles,
   readFileIn
 } from './files'
-import { runV2 } from './v2'
+import { listV2Tasks, runV2, stopV2Task, v2Active } from './v2'
 import { collectUsage } from './usage'
+import { applyUpdate, checkForUpdates, downloadUpdate, UPDATE_REPO } from './update'
+import { McpConnection, mcpDisconnectAll, mcpDropSession, mcpGetSession } from './mcp'
+import type { UpdateCheck } from '../shared/api'
 import type { FileEdit } from '../shared/edits'
 
 let win: BrowserWindow | null = null
@@ -76,7 +83,9 @@ function settleV2Asks(sessionId: string): void {
 // -- window -----------------------------------------------------------------
 
 function themeColors(theme: Settings['theme']): string {
-  return theme === 'light' ? '#f2f2f7' : '#0b0b12'
+  if (theme === 'light') return '#f2f2f7'
+  if (theme === 'singularity') return '#04040a' // the canvas paints the scene on top
+  return '#0b0b12'
 }
 
 function createWindow(bounds?: Electron.Rectangle): void {
@@ -186,22 +195,53 @@ function emit(
 
 // -- app lifecycle ----------------------------------------------------------
 
-/** Brings the local engine up on launch: ping first (an already-running or
- *  user-managed Ollama is left alone), otherwise spawn a detached, windowless
- *  `ollama serve` — it outlives the app like any other local service. */
-function ensureOllama(): void {
-  void pingOllama(getSettings().ollamaUrl).then((ok) => {
-    if (ok) return
+/** Wait helper for the engine boot loop below. */
+function bootWait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** First-use engine bootstrap — called when a chat actually needs Ollama,
+ *  never on launch. Ping first (an already-running or user-managed Ollama is
+ *  left alone — the normal case), otherwise spawn a detached, windowless
+ *  `ollama serve` (it outlives the app like any other local service) and wait
+ *  for the listener: serve binds in ~1–2 s, so the cost hides inside the model
+ *  load that follows the message anyway.
+ *
+ *  Why not on launch: an eager spawn races the Startup-folder autostart
+ *  (`Ollama.lnk`) — on a busy login the launch ping misses within its 2.5 s
+ *  timeout and we'd boot a SECOND serve that immediately loses the port fight.
+ *  Single-flight: concurrent sends share one attempt; the slot clears when it
+ *  settles so a later chat can retry a failed boot. */
+let engineBoot: Promise<boolean> | null = null
+
+function ensureOllama(signal?: AbortSignal): Promise<boolean> {
+  if (engineBoot) return engineBoot
+  engineBoot = (async () => {
+    const url = getSettings().ollamaUrl
+    if (await pingOllama(url)) return true // already up
+
+    let child: ReturnType<typeof spawn> | null = null
     try {
-      const child = spawn('ollama', ['serve'], { detached: true, stdio: 'ignore', windowsHide: true })
-      child.on('error', () => {
-        /* ollama not installed — the sidebar stays offline and Settings explains */
-      })
+      child = spawn('ollama', ['serve'], { detached: true, stdio: 'ignore', windowsHide: true })
       child.unref()
     } catch {
-      /* ditto — never let a missing binary break startup */
+      return false // ollama not installed — the sidebar stays offline
     }
+    let spawnFailed = false
+    child.on('error', () => {
+      spawnFailed = true // ENOENT and friends — don't burn the full wait
+    })
+
+    for (let i = 0; i < 24; i++) {
+      if (signal?.aborted || spawnFailed) return false
+      await bootWait(350)
+      if (await pingOllama(url)) return true
+    }
+    return false // spawned but never answered — streamChat surfaces the error
+  })().finally(() => {
+    engineBoot = null
   })
+  return engineBoot
 }
 
 const gotLock = app.requestSingleInstanceLock()
@@ -220,18 +260,23 @@ if (!gotLock) {
     registerIpc()
     createWindow()
 
-    // launch-time engine check → the sidebar status dot. If Ollama isn't up
-    // yet, start it ourselves so the first chat never waits on a manual
-    // `ollama serve`; the renderer keeps polling until it answers.
+    // launch-time engine check → the sidebar status dot only. Booting Ollama
+    // is deferred to the first chat that needs it (see ensureOllama): launch
+    // must stay quiet, and the renderer keeps polling until it answers either
+    // way — so an Ollama that starts on its own (Startup-folder autostart)
+    // still flips the dot online with no help from us.
     void pingOllama(getSettings().ollamaUrl).then((ok) => {
       win?.webContents.send('health:ollama', ok ? 'online' : 'offline')
-      if (!ok) ensureOllama()
     })
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })
   })
+
+  // MCP children must die with the app — a leaked server process would hold
+  // its stdio pipes open after the window is gone.
+  app.on('before-quit', () => mcpDisconnectAll())
 
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()
@@ -283,6 +328,8 @@ function registerIpc(): void {
   ipcMain.handle('sessions:delete', (_e, id: string) => {
     deleteSession(id)
   })
+  // Ctrl+Shift+F — message scan across every chat (v3.1), capped in store.ts
+  ipcMain.handle('sessions:search', (_e, q: string) => searchSessions(String(q ?? '')))
 
   // models + health ------------------------------------------------------
   ipcMain.handle('models:list', async () => {
@@ -306,6 +353,63 @@ function registerIpc(): void {
   ipcMain.handle('health:ollama', async () => (await pingOllama(getSettings().ollamaUrl)) ? 'online' : 'offline')
   ipcMain.handle('health:drive', () => driveStatus())
 
+  // MCP servers (v3) ----------------------------------------------------
+  // list = config + a live probe of every enabled server; probe = try one
+  // candidate config without saving; save = persist + drop stale sessions.
+  ipcMain.handle('mcp:list', async () => {
+    const servers = getSettings().mcpServers ?? []
+    const out: import('../shared/api').McpStatusEntry[] = []
+    for (const s of servers) {
+      if (s.enabled === false) {
+        out.push({ ...s, status: 'disabled', tools: [] })
+        continue
+      }
+      try {
+        const conn = await mcpGetSession(s.name, s, app.getVersion())
+        out.push({ ...s, status: 'ok', tools: conn.tools.map((t) => t.name) })
+      } catch (e) {
+        out.push({ ...s, status: 'error', tools: [], error: (e as Error)?.message ?? String(e) })
+      }
+    }
+    return out
+  })
+
+  ipcMain.handle('mcp:probe', async (_e, cfg: import('../shared/types').McpServerConfig) => {
+    if (!cfg?.command) return { ok: false, tools: [], error: 'no command' }
+    try {
+      const conn = new McpConnection(cfg.name || 'server', cfg)
+      const tools = await conn.start(app.getVersion())
+      conn.close()
+      return { ok: true, tools: tools.map((t) => t.name) }
+    } catch (e) {
+      return { ok: false, tools: [], error: (e as Error)?.message ?? String(e) }
+    }
+  })
+
+  ipcMain.handle('mcp:save', (_e, servers: import('../shared/types').McpServerConfig[]) => {
+    const before = getSettings().mcpServers ?? []
+    const clean = (Array.isArray(servers) ? servers : [])
+      .filter((s) => s && typeof s.name === 'string' && typeof s.command === 'string')
+      .map((s) => ({
+        name: String(s.name).slice(0, 60),
+        command: String(s.command).slice(0, 400),
+        args: Array.isArray(s.args) ? s.args.map(String).slice(0, 64) : [],
+        ...(s.env && typeof s.env === 'object' ? { env: s.env } : {}),
+        ...(s.enabled === false ? { enabled: false } : {})
+      }))
+    patchSettings({ mcpServers: clean })
+    // drop sessions for removed servers, then every survivor — their config
+    // may have changed (restarted with different args = different process)
+    for (const s of before) if (!clean.some((c) => c.name === s.name)) mcpDropSession(s.name)
+    for (const s of clean) mcpDropSession(s.name)
+    return undefined
+  })
+
+  // background tasks (v3.1 batch30) — the panel's list + kill. Reads the
+  // agent harness's own task maps through the v2 registry cache.
+  ipcMain.handle('tasks:list', () => listV2Tasks())
+  ipcMain.handle('tasks:stop', (_e, uid: string) => stopV2Task(String(uid)))
+
   // chat streaming -------------------------------------------------------
   ipcMain.handle('chat:send', async (_e, sessionId: string) => {
     const session = getSession(sessionId)
@@ -324,8 +428,21 @@ function registerIpc(): void {
 
     let acc = ''
     try {
+      // first-use engine bootstrap — launch stays quiet, so if the local
+      // engine is down when THIS chat actually needs it, bring it up now.
+      // One cheap ping when Ollama is already running (the normal case);
+      // if it's genuinely absent we spawn it and wait for the listener.
+      if (target.kind === 'ollama') {
+        await ensureOllama(controller.signal)
+        if (controller.signal.aborted) throw new Error('stopped while starting Ollama')
+      }
+
       let stats: { promptTokens?: number; completionTokens?: number }
-      if (settings.v2) {
+      // agent mode (v2) only engages over a linked folder — without one the
+      // chat runs on the normal engine instead of erroring (the folder link
+      // is a code-mode thing, plain conversation never needs it)
+      const agent = v2Active(session, settings)
+      if (agent) {
         // agent mode (v2): the shared harness loop — tool calls, safety
         // validation and the per-action approval dialog, all from
         // cli/lib/harness.mjs (the same core the terminal shell uses)
@@ -362,7 +479,7 @@ function registerIpc(): void {
         prompt: stats.promptTokens ?? 0,
         completion: stats.completionTokens ?? 0,
         // agent mode always runs with the 65536 tool-calling window
-        ctx: settings.v2 ? 65536 : contextSizeFor(session.effort ?? settings.effort),
+        ctx: agent ? 65536 : contextSizeFor(session.effort ?? settings.effort),
         ts: Date.now()
       }
       saveSession(session)
@@ -420,6 +537,13 @@ function registerIpc(): void {
     return applyEdits(session, edits)
   })
   ipcMain.handle('edits:undo', (_e, sessionId: string) => undoLast(sessionId))
+  // /history — the timeline of safety copies, and restoring any single one
+  ipcMain.handle('edits:list', (_e, sessionId: string) => listBackups(sessionId))
+  ipcMain.handle('edits:restore', (_e, sessionId: string, backupId: string) => {
+    const session = getSession(sessionId)
+    if (!session) return { restored: 0, message: 'Session not found — nothing changed.' }
+    return restoreBackup(session, String(backupId))
+  })
 
   // usage dashboard -------------------------------------------------------
   ipcMain.handle('usage:stats', (_e, range: import('../shared/usage').UsageRange) => collectUsage(range))
@@ -445,6 +569,20 @@ function registerIpc(): void {
     return gitDiff(folder, pathspec || undefined)
   })
 
+  // tree badges — just `git status`, confined to this chat's linked folders
+  ipcMain.handle('git:status', (_e, sessionId: string, folder: string) => {
+    const roots = getSession(sessionId)?.linkedFolders ?? []
+    const target = path.resolve(String(folder ?? ''))
+    const linked = roots.some((r) => {
+      const root = path.resolve(r)
+      if (root === target) return true
+      const rel = path.relative(root, target)
+      return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel)
+    })
+    if (!linked) return { ok: false, folder: '', files: [] } satisfies import('../shared/api').GitStatus
+    return gitStatus(target)
+  })
+
   // @mention: list / read files inside the chat's linked folders ------------
   ipcMain.handle('files:list', (_e, sessionId: string, query: string) => {
     const session = getSession(sessionId)
@@ -461,9 +599,9 @@ function registerIpc(): void {
   ipcMain.handle('files:show', (_e, target: string) => shell.showItemInFolder(target))
 
   // IDE pane (v1.5): cowork the linked folders next to the chat ------------
-  ipcMain.handle('ide:tree', (_e, sessionId: string) => {
+  ipcMain.handle('ide:tree', (_e, sessionId: string, showIgnored?: boolean) => {
     const session = getSession(sessionId)
-    return ideTree(session?.linkedFolders ?? [])
+    return ideTree(session?.linkedFolders ?? [], { showIgnored: !!showIgnored })
   })
   ipcMain.handle('ide:read', (_e, sessionId: string, target: string) => {
     const session = getSession(sessionId)
@@ -471,6 +609,13 @@ function registerIpc(): void {
   })
   ipcMain.handle('ide:write', (_e, sessionId: string, target: string, content: string) => {
     const session = getSession(sessionId)
+    // a truncated editor buffer must never overwrite a bigger file — that
+    // silently deletes everything past the read cap
+    if (ideSaveWouldTruncate(target, content)) {
+      throw new Error(
+        'That file is over 1 MB — cowork opened it truncated, so saving would delete the rest of it. Use your own editor for files this big.'
+      )
+    }
     const saved = ideWrite(session?.linkedFolders ?? [], target, content)
     if (saved == null) throw new Error('That path is outside the linked folders')
     return saved
@@ -480,6 +625,22 @@ function registerIpc(): void {
     const made = ideCreate(session?.linkedFolders ?? [], target, dir)
     if (made == null) throw new Error('That path is outside the linked folders')
     return made
+  })
+  // rename / delete from the file tree — both confined to the linked folders,
+  // delete refuses directories so one click can never take a whole tree
+  ipcMain.handle('ide:rename', (_e, sessionId: string, from: string, to: string) => {
+    const session = getSession(sessionId)
+    const moved = ideRename(session?.linkedFolders ?? [], String(from), String(to))
+    if (moved == null) {
+      throw new Error('Rename refused — outside the linked folders, the file is gone, or the name is taken')
+    }
+    return moved
+  })
+  ipcMain.handle('ide:delete', (_e, sessionId: string, target: string) => {
+    const session = getSession(sessionId)
+    const ok = ideDelete(session?.linkedFolders ?? [], String(target))
+    if (!ok) throw new Error('Delete refused — only files inside the linked folders can be removed')
+    return true
   })
 
   // markdown file dumps — a model answering with "heading + code block" per file
@@ -498,6 +659,16 @@ function registerIpc(): void {
     }
     if (!saved.length) throw new Error('No file landed inside the linked folder')
     return saved
+  })
+
+  // code-block actions (v3.1): "apply this block to a file" — the WHOLE file
+  // is the search text, so a plain code block becomes a full overwrite that
+  // still runs through applyEdits: same confinement, same safety backup,
+  // same /undo as every agent edit.
+  ipcMain.handle('files:applyBlock', (_e, sessionId: string, target: string, content: string) => {
+    const session = getSession(sessionId)
+    if (!session) throw new Error('Unknown chat')
+    return applyCodeBlock(session, target, content)
   })
 
   // image viewing: local image → data URL (chat thumbs, IDE preview) --------
@@ -653,9 +824,10 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('dialog:saveText', async (_e, defaultName: string, content: string) => {
+    const json = String(defaultName).toLowerCase().endsWith('.json')
     const res = await dialog.showSaveDialog(win!, {
       defaultPath: defaultName,
-      filters: [{ name: 'Markdown', extensions: ['md'] }]
+      filters: [{ name: json ? 'JSON' : 'Markdown', extensions: [json ? 'json' : 'md'] }]
     })
     if (res.canceled || !res.filePath) return null
     fs.writeFileSync(res.filePath, content, 'utf8')
@@ -672,5 +844,45 @@ function registerIpc(): void {
   ipcMain.handle('app:version', () => app.getVersion())
   ipcMain.handle('app:openExternal', (_e, url: string) => {
     if (url.startsWith('http://') || url.startsWith('https://')) void shell.openExternal(url)
+  })
+
+  // in-app update (v2.6) ---------------------------------------------------
+  // State for the two-step flow: check remembers what to fetch, download
+  // streams it and reports progress, apply starts the silent installer.
+  let updateCheck: UpdateCheck | null = null
+  let updateFile: string | null = null
+
+  ipcMain.handle('update:check', async () => {
+    updateCheck = await checkForUpdates(app.getVersion())
+    if (!updateCheck.available) updateFile = null // nothing newer — drop any old file
+    return updateCheck
+  })
+
+  ipcMain.handle('update:download', async () => {
+    const rel = updateCheck?.release
+    if (!rel) return { error: 'no update available' }
+    const dir = path.join(app.getPath('temp'), 'codezy-update')
+    const res = await downloadUpdate(rel.url, dir, (p) => win?.webContents.send('update:progress', p))
+    if ('error' in res) return res
+    updateFile = res.path
+    return res
+  })
+
+  ipcMain.handle('update:apply', async () => {
+    if (!updateFile) return { error: 'update not downloaded yet' }
+    const res = await applyUpdate(updateFile)
+    if (res.ok) {
+      // The installer replaces our files while we're gone — quit right after
+      // the spawn lands so NSIS doesn't wait on locks (`--force-run` brings
+      // the new version back).
+      setTimeout(() => app.quit(), 300)
+    }
+    return res
+  })
+
+  ipcMain.handle('update:openRelease', (_e, url: string) => {
+    const fallback = updateCheck?.release?.page ?? `https://github.com/${UPDATE_REPO}/releases`
+    const target = typeof url === 'string' && url.startsWith('https://github.com/') ? url : fallback
+    void shell.openExternal(target)
   })
 }

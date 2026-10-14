@@ -29,6 +29,8 @@ export interface V2Event {
   args?: Record<string, unknown>
   outcome?: V2Outcome
   result?: string
+  /** v3.1 — wall time of the whole tool step, milliseconds. */
+  ms?: number
   status?: 'text' | 'limit'
   text?: string
   iterations?: number
@@ -42,8 +44,23 @@ export interface V2Todo {
 export interface V2RegistryEntry {
   check?: (args: Record<string, unknown>) => string | null
   run: (args: Record<string, unknown>) => Promise<string>
-  /** todo_write only — the live checklist for the current registry. */
-  state?: { todos: V2Todo[] }
+  /** todo_write / task_status — the live checklist + background tasks. */
+  state?: {
+    todos: V2Todo[]
+    tasks?: Map<
+      number,
+      {
+        id: number
+        command: string
+        running: boolean
+        code: number | string | null
+        out: string
+        started?: number
+        proc?: { pid?: number; kill: (signal?: unknown) => unknown } | null
+      }
+    >
+    nextTaskId?: number
+  }
 }
 
 export type V2Registry = Record<string, V2RegistryEntry>
@@ -52,7 +69,20 @@ export const DEFAULT_NUM_CTX: number
 export const DEFAULT_TEMPERATURE: number
 export const DEFAULT_MAX_ITER: number
 export const DANGEROUS_TOOLS: ReadonlySet<string>
-export const TOOLS: unknown[]
+/** Tools that change the disk or run code — plan mode refuses all of them. */
+export const MUTATING_TOOLS: ReadonlySet<string>
+
+export interface V2ToolSchema {
+  type?: string
+  function?: { name?: string; description?: string; parameters?: unknown }
+}
+
+export const TOOLS: V2ToolSchema[]
+/** v3 sub-agent tool schema — merged into the loop by runAgent itself. */
+export const DELEGATE_TOOL: V2ToolSchema
+
+/** Minimal glob → RegExp (** crosses folders, * stays inside a segment). */
+export function globToRegExp(pattern: string): RegExp
 
 export interface OllamaCallOptions {
   baseUrl?: string
@@ -95,7 +125,13 @@ export function openaiCall(o: OpenAICallOptions): Promise<OllamaCallResult>
 /** Resolves a model-provided path against the allowed roots, or throws. */
 export function resolveInRoots(roots: string[], raw: unknown): string
 
-export function makeRegistry(opts: { roots: string[]; cwd?: string; execTimeoutMs?: number }): V2Registry
+export function makeRegistry(opts: {
+  roots: string[]
+  cwd?: string
+  execTimeoutMs?: number
+  /** Plan mode: write_file / edit_file / run_command refuse in `check`. */
+  allowMutations?: boolean
+}): V2Registry
 
 /** One hook entry: shell command, optional tool filter (default: every tool). */
 export interface V2Hook {
@@ -132,6 +168,13 @@ export interface RunAgentOptions {
   /** before_tool failures BLOCK the action; after_tool failures are appended to the tool result. */
   hooks?: V2Hooks | null
   signal?: AbortSignal
+  /** v3 sub-agents — `delegate` is merged into the loop when this is on. */
+  allowDelegate?: boolean
+  /** Depth of the CURRENT chain (0 = the top-level run). */
+  delegateDepth?: number
+  maxDelegateDepth?: number
+  /** Iteration budget a sub-agent gets. */
+  delegateIter?: number
 }
 
 export interface RunAgentResult {

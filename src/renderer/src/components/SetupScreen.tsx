@@ -93,8 +93,8 @@ export default function SetupScreen() {
               <p className="setup-tagline">
                 Claude Code style chat for your models — local first, cloud ready.
               </p>
-              {/* live engine status — the app starts Ollama on launch, so this
-                  usually flips to "ready" before you finish reading */}
+              {/* live engine status — Ollama's own autostart usually has it
+                  online already; if not, the first chat brings it up */}
               <div className={`setup-engine${s.ollama === 'online' ? ' on' : ''}`}>
                 <span
                   className={`setup-dot${
@@ -104,7 +104,7 @@ export default function SetupScreen() {
                 {s.ollama === 'online'
                   ? 'Ollama ready — local engine detected'
                   : s.ollama === 'offline'
-                    ? "waiting for Ollama — CODEZY starts it automatically, or connect a cloud provider next"
+                    ? "waiting for Ollama — CODEZY starts it with your first message, or connect a cloud provider next"
                     : 'checking for Ollama…'}
               </div>
               <div className="setup-lines">
@@ -153,7 +153,7 @@ export default function SetupScreen() {
                   {s.ollama === 'online'
                     ? 'Ollama is running'
                     : s.ollama === 'offline'
-                      ? "Ollama isn't running — start it with ollama serve, or connect a cloud provider below"
+                      ? "Ollama isn't running — CODEZY starts it with your first message (or run ollama serve), or connect a cloud provider below"
                       : 'checking…'}
                 </span>
               </div>

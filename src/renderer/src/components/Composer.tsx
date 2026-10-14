@@ -4,7 +4,7 @@ import type { EffortLevel } from '../../../shared/types'
 import type { FileRef } from '../../../shared/api'
 import { COMMANDS, THEME_NAMES } from '../../../shared/commands'
 import ModelPicker from './ModelPicker'
-import { IconClip, IconCode, IconLinkFolder, IconSend, IconStop, IconTrash } from './Icons'
+import { IconClip, IconCode, IconLinkFolder, IconSend, IconStop, IconTerminal, IconTrash } from './Icons'
 
 interface Attachment {
   path: string
@@ -156,13 +156,18 @@ export default function Composer() {
       picked && !files.some((f) => f.path === picked.path)
         ? [...files, { path: picked.path, content: picked.content.slice(0, 100_000) }]
         : files
+    const staged = files
     setText('')
     setFiles([])
     setCmdIdx(0)
     setMention(null)
     setMentionList([])
     requestAnimationFrame(resize)
-    await s.send(value, payload)
+    if (!(await s.send(value, payload))) {
+      // not delivered (save failed, reply didn't stop) — hand the draft back
+      setText((prev) => (prev ? prev : value))
+      setFiles((prev) => (prev.length ? prev : staged))
+    }
   }
 
   /** Replaces the @query with the picked file and stages it as an attachment. */
@@ -320,6 +325,153 @@ export default function Composer() {
     if (!s.activeId) await s.newChat(s.filterProjectId)
     const folder = await window.codezy.dialog.pickFolder('Link folder to this chat')
     if (folder) await s.linkFolder(folder)
+  }
+
+  // -- invisible-corridor hover intent (effort / mode popovers) ---------------
+  // Pure CSS :hover can't cross the 8px gap between badge and popover: the
+  // cursor leaves the badge, :hover dies mid-travel and the popover snaps shut
+  // before the click lands. Like real menu systems (the invisible triangle
+  // every submenu rides), hold it open while the pointer is inside either
+  // box or inside the CORRIDOR — the quad hull between the badge's near edge
+  // and the popover's near edge — and give it a short grace period when it
+  // slips out, so any diagonal, curved or sideways sweep just works.
+  const [segIntent, setSegIntent] = useState<'effort' | 'mode' | null>(null)
+  const segGen = useRef(0) // generation counter — a new leave retires old trackers
+  const segStop = useRef<(() => void) | null>(null)
+
+  /** Click-to-pin: hover previews the popover, a CLICK latches it open, so
+   *  the trip across the 8px gap can never close it under the cursor — and
+   *  touch / click-first users get a real toggle instead of hover-only. */
+  const [segPinned, setSegPinned] = useState<'effort' | 'mode' | null>(null)
+
+  // while pinned: an outside click or Esc lets go. Clicks inside the fabs are
+  // left alone — each fab toggles itself, and an option click closes through
+  // the fab's own handler (see segFabClick).
+  useEffect(() => {
+    if (!segPinned) return
+    const onDown = (e: PointerEvent) => {
+      if ((e.target as Element | null)?.closest?.('.seg-fab')) return
+      setSegPinned(null)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSegPinned(null)
+    }
+    window.addEventListener('pointerdown', onDown, true)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('pointerdown', onDown, true)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [segPinned])
+
+  /** Badge click → latch open (again → let go). A click that bubbled from an
+   *  option only closes — it must never re-latch after a choice was made. */
+  function segFabClick(key: 'effort' | 'mode', e: React.MouseEvent<HTMLDivElement>) {
+    if ((e.target as Element).closest('.segmented')) {
+      setSegPinned(null)
+      return
+    }
+    setSegPinned(segPinned === key ? null : key)
+  }
+
+  // unmount (theme/setup swaps) must not leave window-level listeners behind
+  useEffect(
+    () => () => {
+      segStop.current?.()
+      segStop.current = null
+    },
+    []
+  )
+
+  /** Sign-test point-in-quad; edges and collinear points count as inside. */
+  function inQuad(
+    p: { x: number; y: number },
+    a: { x: number; y: number },
+    b: { x: number; y: number },
+    c: { x: number; y: number },
+    d: { x: number; y: number }
+  ): boolean {
+    const side = (o: { x: number; y: number }, u: { x: number; y: number }, v: { x: number; y: number }) =>
+      (u.x - o.x) * (v.y - o.y) - (u.y - o.y) * (v.x - o.x)
+    const s = [side(a, b, p), side(b, c, p), side(c, d, p), side(d, a, p)]
+    return !(s.some((v) => v < 0) && s.some((v) => v > 0))
+  }
+
+  function segLeave(key: 'effort' | 'mode', e: React.PointerEvent<HTMLDivElement>) {
+    const box = e.currentTarget
+    const pop = box.querySelector<HTMLElement>('.segmented')
+    if (!pop) return
+    const gen = ++segGen.current
+    setSegIntent(key) // keeps the pure-CSS visuals open (see .seg-fab.intent)
+
+    const rect = (el: Element) => el.getBoundingClientRect()
+    const inRect = (p: { x: number; y: number }, r: DOMRect) =>
+      p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom
+    const onBox = (p: { x: number; y: number }) => inRect(p, rect(pop)) || inRect(p, rect(box))
+    /** The invisible corridor: the quad hull between the badge's near edge and
+     *  the popover's near edge — any diagonal, curved or sideways sweep from
+     *  one box toward the other rides inside it, in either direction. */
+    const inCorridor = (p: { x: number; y: number }): boolean => {
+      const pr = rect(pop)
+      const br = rect(box)
+      if (pr.bottom <= br.top + 1)
+        return inQuad(
+          p,
+          { x: br.left, y: br.top },
+          { x: br.right, y: br.top },
+          { x: pr.right, y: pr.bottom },
+          { x: pr.left, y: pr.bottom }
+        )
+      if (pr.top >= br.bottom - 1)
+        return inQuad(
+          p,
+          { x: br.left, y: br.bottom },
+          { x: br.right, y: br.bottom },
+          { x: pr.right, y: pr.top },
+          { x: pr.left, y: pr.top }
+        )
+      return false
+    }
+
+    let grace: ReturnType<typeof setTimeout> | null = null
+    function cancelGrace() {
+      if (grace !== null) {
+        clearTimeout(grace)
+        grace = null
+      }
+    }
+    function detach() {
+      cancelGrace()
+      window.removeEventListener('pointermove', onMove, true)
+      window.removeEventListener('pointerdown', onDown, true)
+      window.removeEventListener('blur', onBlur)
+      if (segStop.current === detach) segStop.current = null
+    }
+    /** Hand back to native :hover — inside a box it sustains the popover. */
+    function release() {
+      detach()
+      if (gen === segGen.current) setSegIntent(null)
+    }
+    function onMove(ev: PointerEvent) {
+      if (gen !== segGen.current) return detach() // a newer tracker owns the state
+      const p = { x: ev.clientX, y: ev.clientY }
+      if (onBox(p) || inCorridor(p)) return cancelGrace() // still inside — hold
+      if (grace === null) grace = setTimeout(release, 260) // slipped out: grace
+    }
+    function onDown(ev: PointerEvent) {
+      if (gen !== segGen.current) return detach()
+      const p = { x: ev.clientX, y: ev.clientY }
+      if (onBox(p)) return detach() // the click lands inside — don't fight hover
+      release() // a click outside dismisses — no grace
+    }
+    function onBlur() {
+      release()
+    }
+
+    segStop.current = detach
+    window.addEventListener('pointermove', onMove, true)
+    window.addEventListener('pointerdown', onDown, true)
+    window.addEventListener('blur', onBlur)
   }
 
   return (
@@ -505,7 +657,12 @@ export default function Composer() {
           <button
             className="chip icon-chip"
             data-tip="Attach files"
-            onClick={async () => setFiles(await window.codezy.dialog.pickFiles())}
+            onClick={async () => {
+              const picked = await window.codezy.dialog.pickFiles()
+              if (!picked.length) return // Cancel must not wipe what's staged
+              // merge, deduped by path — a second batch appends to the first
+              setFiles((prev) => [...prev, ...picked.filter((f) => !prev.some((p) => p.path === f.path))])
+            }}
           >
             <IconClip style={{ width: 13, height: 13 }} />
           </button>
@@ -516,8 +673,25 @@ export default function Composer() {
 
           <ModelPicker />
 
-          {/* effort — circle badge "E", expands into the options on hover */}
-          <div className="seg-fab" title="Effort — sampling temperature (hover to choose)">
+          {/* batch30 — live count of the agent's running background tasks */}
+          {s.taskCount > 0 && (
+            <button
+              className="chip icon-chip task-chip"
+              data-tip="Background tasks"
+              onClick={() => s.setTasksOpen(true)}
+            >
+              <IconTerminal style={{ width: 13, height: 13 }} />
+              <span className="task-count">{s.taskCount}</span>
+            </button>
+          )}
+
+          {/* effort — circle badge "E"; hover previews, click latches open */}
+          <div
+            className={`seg-fab${segPinned === 'effort' ? ' pinned' : ''}${segIntent === 'effort' ? ' intent' : ''}`}
+            title="Effort — sampling temperature (hover or click to choose)"
+            onPointerLeave={(e) => segLeave('effort', e)}
+            onClick={(e) => segFabClick('effort', e)}
+          >
             <span className="seg-badge">E</span>
             <div className="segmented">
               {EFFORTS.map((e) => (
@@ -525,11 +699,14 @@ export default function Composer() {
                   key={e.id}
                   className={effort === e.id ? 'on' : ''}
                   title={e.title}
-                  onClick={() =>
+                  onClick={(ev) => {
+                    // pointer pick: release focus so :focus-within can't trap the
+                    // popover open after the choice lands (keyboard keeps it)
+                    if (ev.detail > 0) ev.currentTarget.blur()
                     void (s.activeId
                       ? s.setSessionGen(s.activeId, { effort: e.id })
                       : s.updateSettings({ effort: e.id }))
-                  }
+                  }}
                 >
                   {e.label}
                 </button>
@@ -537,8 +714,13 @@ export default function Composer() {
             </div>
           </div>
 
-          {/* mode — circle badge "M" (plan / build / auto), popover on hover */}
-          <div className="seg-fab seg-fab-right" title="Mode — plan, build or auto (hover to choose)">
+          {/* mode — circle badge "M" (plan / build / auto); hover or click */}
+          <div
+            className={`seg-fab seg-fab-right${segPinned === 'mode' ? ' pinned' : ''}${segIntent === 'mode' ? ' intent' : ''}`}
+            title="Mode — plan, build or auto (hover or click to choose)"
+            onPointerLeave={(e) => segLeave('mode', e)}
+            onClick={(e) => segFabClick('mode', e)}
+          >
             <span className="seg-badge">M</span>
             <div className="segmented mode-seg">
               {MODES.map((m) => (
@@ -547,7 +729,10 @@ export default function Composer() {
                   data-mode={m.id}
                   className={(s.settings?.mode ?? 'build') === m.id ? 'on' : ''}
                   title={m.title}
-                  onClick={() => void s.updateSettings({ mode: m.id })}
+                  onClick={(ev) => {
+                    if (ev.detail > 0) ev.currentTarget.blur()
+                    void s.updateSettings({ mode: m.id })
+                  }}
                 >
                   {m.label}
                 </button>
@@ -563,6 +748,16 @@ export default function Composer() {
           >
             <span className="ctx-label">≈{fmtTok(ctxUsed)}</span>
           </span>
+
+          {/* live reply size — how many tokens this generation has cost so far */}
+          {s.streaming && s.streamText ? (
+            <span
+              className="ctx-meter tip-wrap live"
+              data-tip="Tokens in the reply being generated right now"
+            >
+              <span className="ctx-label">+{fmtTok(Math.round(s.streamText.length / 4))}</span>
+            </span>
+          ) : null}
 
           {s.streaming ? (
             <>
@@ -589,7 +784,7 @@ export default function Composer() {
 
       <div className="hint">
         {s.ollama === 'offline'
-          ? 'Ollama is not running — start it with `ollama serve`'
+          ? 'Ollama is not running — your next message starts it'
           : 'CODEZY runs locally · your chats never leave this machine'}
       </div>
     </div>

@@ -12,6 +12,7 @@ import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import type { Project, Session, Settings } from '../shared/types'
+import type { ChatSearchHit } from '../shared/api'
 
 const DEFAULT_DATA_DIR = path.join(os.homedir(), '.codezy')
 
@@ -24,16 +25,41 @@ function readJson<T>(file: string, fallback: T): T {
     if (!fs.existsSync(file)) return fallback
     return { ...fallback, ...JSON.parse(fs.readFileSync(file, 'utf8')) } as T
   } catch {
-    // A corrupted file must never crash the app — fall back to defaults.
+    // A corrupted file must never crash the app — fall back to defaults, but
+    // move the unreadable file aside first: the next write would otherwise
+    // silently replace the user's real config with defaults, losing it.
+    try {
+      if (fs.existsSync(file)) fs.renameSync(file, `${file}.corrupt`)
+    } catch {
+      /* leave it in place — still better than crashing */
+    }
     return fallback
   }
 }
 
 function writeJson(file: string, data: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  const tmp = file + '.tmp' // write to a temp file first …
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8')
-  fs.renameSync(tmp, file) // … then atomically swap it in
+  // Unique temp per writer: the GUI and the TUI both write these files, and
+  // a shared `<file>.tmp` lets one process rename the other's half-written
+  // temp into place (torn JSON) or hit a locked handle on Windows.
+  const tmp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8') // write temp first …
+    try {
+      fs.renameSync(tmp, file) // … then atomically swap it in
+    } catch {
+      // Windows: the target can be held open briefly by the other writer
+      fs.rmSync(file, { force: true })
+      fs.renameSync(tmp, file)
+    }
+  } catch (e) {
+    try {
+      fs.rmSync(tmp, { force: true })
+    } catch {
+      /* ignore */
+    }
+    throw e
+  }
 }
 
 // -- folder layout ----------------------------------------------------------
@@ -54,9 +80,26 @@ export function getDataDir(): string {
   return dataDir
 }
 
+/** The custom data folder recorded in the DEFAULT settings file (boot pointer).
+ *  The pointer itself must live in the default location — there is nowhere
+ *  else to read before we know where the data folder is. */
+function readDataDirPointer(): string | undefined {
+  try {
+    const file = path.join(DEFAULT_DATA_DIR, 'settings.json')
+    if (!fs.existsSync(file)) return undefined
+    const j = JSON.parse(fs.readFileSync(file, 'utf8')) as { dataDir?: unknown }
+    return typeof j.dataDir === 'string' && j.dataDir.trim() ? j.dataDir : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** Creates the folder tree. Called once at startup (and after a data-dir change). */
 export function initStore(dir?: string): void {
-  dataDir = dir && dir.trim() ? dir : DEFAULT_DATA_DIR
+  // no explicit dir = boot: honour a persisted dataDir, or the next launch
+  // would silently start over in ~/.codezy and strand the custom folder
+  const target = dir && dir.trim() ? dir : readDataDirPointer()
+  dataDir = target && target.trim() ? target : DEFAULT_DATA_DIR
   for (const dir of [dataDir, p.sessions(), path.dirname(p.projectContext('x')), p.skills()]) {
     fs.mkdirSync(dir, { recursive: true })
   }
@@ -146,7 +189,13 @@ export const DEFAULT_SETTINGS: Settings = {
   /** kill every transition/animation (accessibility) */
   reduceMotion: false,
   /** nudge the model when a reply stops inside an unclosed code fence */
-  autoContinue: true
+  autoContinue: true,
+  /** row/padding density of the interface */
+  density: 'cozy',
+  /** check GitHub for a newer CODEZY on launch (the quiet title-bar pill) */
+  autoUpdate: true,
+  /** MCP servers (v3) — none until the user adds one in Settings */
+  mcpServers: []
 }
 
 export function getSettings(): Settings {
@@ -155,7 +204,21 @@ export function getSettings(): Settings {
 
 export function saveSettings(s: Settings): Settings {
   // If the data folder moved, re-root everything before saving.
-  if (s.dataDir && s.dataDir !== dataDir) initStore(s.dataDir)
+  if (s.dataDir && s.dataDir !== dataDir) {
+    // The boot pointer lives in the DEFAULT location's settings file (see
+    // readDataDirPointer) — update it there too, or the next launch starts
+    // from the old folder and the change never survives a restart. When we
+    // ARE rooted at the default, the regular write below is that pointer.
+    if (dataDir !== DEFAULT_DATA_DIR) {
+      try {
+        const pointerFile = path.join(DEFAULT_DATA_DIR, 'settings.json')
+        writeJson(pointerFile, { ...readJson<Settings>(pointerFile, DEFAULT_SETTINGS), dataDir: s.dataDir })
+      } catch {
+        /* best effort — the save below still lands in the new folder */
+      }
+    }
+    initStore(s.dataDir)
+  }
   writeJson(p.settings(), s)
   return s
 }
@@ -219,6 +282,40 @@ export function listSessions(): Session[] {
   } catch {
     return []
   }
+}
+
+/**
+ * Cross-chat message search (v3.1): case-insensitive substring scan over the
+ * most recent sessions (listSessions is newest-first, top 60), newest message
+ * first inside each. Hidden/system notes are skipped; snippets are single-line
+ * with ~70 chars of context before the match. Caps: `limit` hits (default 50).
+ */
+export function searchSessions(query: string, limit = 50): ChatSearchHit[] {
+  const q = String(query ?? '').trim().toLowerCase()
+  if (q.length < 2) return []
+  const hits: ChatSearchHit[] = []
+  for (const s of listSessions().slice(0, 60)) {
+    if (hits.length >= limit) break
+    const messages = [...(s.messages ?? [])].reverse()
+    for (const m of messages) {
+      if (hits.length >= limit) break
+      if (m.hidden || typeof m.content !== 'string' || !m.content) continue
+      const i = m.content.toLowerCase().indexOf(q)
+      if (i < 0) continue
+      const from = Math.max(0, i - 70)
+      const to = Math.min(m.content.length, i + q.length + 110)
+      const raw = m.content.slice(from, to).replace(/\s+/g, ' ')
+      hits.push({
+        sessionId: s.id,
+        sessionTitle: s.title,
+        messageId: m.id,
+        ts: m.ts,
+        role: m.role,
+        snippet: `${from > 0 ? '…' : ''}${raw}${to < m.content.length ? '…' : ''}`
+      })
+    }
+  }
+  return hits
 }
 
 export function getSession(id: string): Session | null {

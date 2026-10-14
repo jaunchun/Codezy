@@ -28,8 +28,10 @@ import {
   ollamaCall,
   openaiCall,
   DEFAULT_NUM_CTX,
-  DANGEROUS_TOOLS
+  DANGEROUS_TOOLS,
+  TOOLS
 } from './lib/harness.mjs'
+import { mcpRegistryTools, mcpGetSession, mcpDisconnectAll } from './lib/mcp.mjs'
 import { renderMd } from './lib/md.mjs'
 import { webSearch } from './lib/search.mjs'
 import { parseArgs, readStdin } from './lib/cli.mjs'
@@ -40,7 +42,7 @@ const argv = process.argv.slice(2)
 // `codezy exec|run "prompt"` — codex-exec / opencode-run style one-shot entry
 const A = parseArgs(argv, ['root', 'dir', 'model', 'url', 'ctx', 'print', 'p', 'output-format'])
 const SUB = A.positionals[0] === 'exec' || A.positionals[0] === 'run' ? A.positionals.shift() : null
-const auto = A.present.has('auto')
+let auto = A.present.has('auto') // `/auto` flips it mid-session
 const ROOT0 = path.resolve(A.values.root ?? A.values.dir ?? process.cwd())
 const CTX = Math.max(4096, parseInt(A.values.ctx ?? '', 10) || DEFAULT_NUM_CTX)
 // one-shot print mode: `exec "prompt"` · `-p "prompt"` · `--agent "prompt"`
@@ -72,7 +74,7 @@ let settings = readJson(path.join(HOME, 'settings.json'), {})
 if (settings.dataDir && settings.dataDir !== HOME) {
   settings = { ...settings, ...readJson(path.join(settings.dataDir, 'settings.json'), {}) }
 }
-const MODEL = A.values.model || settings.activeModel || 'llama3.1:8b'
+let MODEL = A.values.model || settings.activeModel || 'llama3.1:8b' // `/model` switches it live
 const URL = A.values.url || settings.ollamaUrl || 'http://127.0.0.1:11434'
 
 // cloud provider from settings (desktop or /provider nebius <key> sets this
@@ -96,21 +98,74 @@ const green = (s) => c(32, s)
 const red = (s) => c(31, s)
 const yellow = (s) => c(33, s)
 
+// -- thinking spinner (TTY only — pipes stay byte-clean for tests/CI) -----------
+// One line on stderr that erases itself before anything else writes. Once a tool
+// step speaks up the spinner retires for good: output has taken over.
+const SPIN = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+let spinTimer = null
+let spinFrame = 0
+const spinAllowed = () => TTY && !PRINT && !!process.stderr.isTTY && !!process.stdin.isTTY
+function spinStart(label = 'thinking') {
+  if (!spinAllowed() || spinTimer) return
+  spinFrame = 0
+  const draw = () => {
+    if (awaitingApproval) return // the y/N question owns the line now
+    if (rl?.line) return // the user is typing — never wipe their echo
+    process.stderr.write(`\r\x1b[K${dim(`${SPIN[spinFrame++ % SPIN.length]} ${label}…`)}`)
+  }
+  draw()
+  spinTimer = setInterval(draw, 90)
+  spinTimer.unref?.()
+}
+/** Erase the spinner's line without retiring it — call before writing output. */
+function spinClear() {
+  if (!spinTimer) return // no spinner on screen (and pipes stay byte-clean)
+  process.stderr.write('\r\x1b[K')
+}
+function spinStop() {
+  if (!spinTimer) return
+  clearInterval(spinTimer)
+  spinTimer = null
+  process.stderr.write('\r\x1b[K')
+}
+
 // -- session state ---------------------------------------------------------------
 
 let roots = [ROOT0]
 let history = [] // assistant/tool chain from the previous turn (stateful!)
 const SYSTEM = `You are CODEZY, a coding agent running in the user's terminal.
-You have tools: list_dir, read_file, write_file, grep_search, run_command, web_search, todo_write.
-Inspect the workspace with them before answering when that helps. web_search queries
-the internet (DuckDuckGo) and returns titles, URLs and snippets — USE IT for anything
-current or web-related (releases, prices, docs, news) and whenever you are unsure; you
-DO have internet access through it, never claim you cannot search the web. Paths are
-relative to the workspace root. For any task with more than two steps, first save your
+You have tools: list_dir, read_file, write_file, edit_file, glob, grep_search, run_command,
+task_status, web_search, web_fetch, todo_write. Inspect the workspace with them before
+answering when that helps. web_search queries the internet (DuckDuckGo) and returns titles,
+URLs and snippets — USE IT for anything current or web-related (releases, prices, docs, news)
+and whenever you are unsure; you DO have internet access through it, never claim you cannot
+search the web. web_fetch opens one URL and returns its text (HTML stripped to prose) — after
+a search, fetch the 1–3 most promising links instead of answering from snippets alone. Paths
+are relative to the workspace root. For any task with more than two steps, first save your
 plan with todo_write (pending / in_progress / done) and update it as you finish each
 step. Be direct and practical; answer in plain markdown,
-fenced code blocks with a language tag. write_file and run_command always ask the
+fenced code blocks with a language tag. write_file, edit_file and run_command always ask the
 user for approval first — say in one short sentence what you are about to do.`
+
+// every slash command, for TAB completion and the /help screen alike
+const SLASH = [
+  '/auto',
+  '/clear',
+  '/exit',
+  '/export',
+  '/help',
+  '/mcp',
+  '/model',
+  '/quit',
+  '/root',
+  '/search',
+  '/todos',
+  '/tools'
+]
+const completer = (line) => {
+  const hits = SLASH.filter((k) => k.startsWith(line))
+  return [hits.length ? hits : [], line]
+}
 
 // print mode over a pipe never opens a REPL on stdin (the prompt is read raw)
 const rl =
@@ -119,7 +174,8 @@ const rl =
     : readline.createInterface({
         input: process.stdin,
         output: process.stdout,
-        prompt: cyan('you> ')
+        prompt: cyan('you> '),
+        completer
       })
 
 function question(q) {
@@ -133,6 +189,7 @@ let awaitingApproval = false // the y/N question owns the next line of input
 async function approve(name, args) {
   if (auto) return true
   if (!process.stdin.isTTY) return false // pipes: deny unless --auto
+  spinClear() // erase the spinner before the question takes the line
   const what =
     name === 'write_file'
       ? `write ${args.path} (${String(args.content ?? '').split('\n').length} lines)`
@@ -147,7 +204,8 @@ async function approve(name, args) {
     awaitingApproval = false
     if (rl) {
       rl.setPrompt(cyan('you> '))
-      if (process.stdin.isTTY) rl.prompt()
+      // mid-run there is no prompt: the spinner keeps holding the line
+      if (process.stdin.isTTY && !busy) rl.prompt()
     }
   }
 }
@@ -156,6 +214,7 @@ async function approve(name, args) {
 
 function onEvent(ev) {
   if (ev.type !== 'tool') return
+  spinClear() // the ⎿ line starts on a clean line, spinner redraws below it
   const argStr =
     ev.name === 'run_command'
       ? String(ev.args?.command ?? '')
@@ -163,7 +222,9 @@ function onEvent(ev) {
         ? String(ev.args?.path ?? '.')
         : ev.name === 'grep_search'
           ? `/${ev.args?.pattern}/`
-          : String(ev.args?.query ?? '')
+          : ev.name === 'web_fetch'
+            ? String(ev.args?.url ?? '')
+            : String(ev.args?.query ?? '')
   // structured output in print mode: stdout stays machine-readable
   if (PRINT && FMT === 'json') {
     toolEvents.push({ name: ev.name, arg: argStr.slice(0, 120), ok: ev.outcome === 'ok' })
@@ -180,7 +241,9 @@ function onEvent(ev) {
   const write = PRINT ? console.error : console.log
   const verb = ev.name.replace(/_/g, ' ')
   const summary = ev.outcome === 'ok' ? stepSummary(ev.name, ev.result) : ev.outcome
-  write(`  ${dim('⎿')} ${cyan(verb)} ${dim(argStr.slice(0, 60))}${summary ? ` ${dim('·')} ${dim(summary)}` : ''}`)
+  // v3.1: wall time of the step rides the tail of the line (142ms / 1.4s)
+  const ms = typeof ev.ms === 'number' ? dim(`· ${ev.ms < 1000 ? `${ev.ms}ms` : `${(ev.ms / 1000).toFixed(1)}s`}`) : ''
+  write(`  ${dim('⎿')} ${cyan(verb)} ${dim(argStr.slice(0, 60))}${summary ? ` ${dim('·')} ${dim(summary)}` : ''}${ms ? ` ${ms}` : ''}`)
 }
 
 /** One short human phrase for the ⎿ line after a successful tool step. */
@@ -194,6 +257,7 @@ function stepSummary(name, res) {
   if (name === 'grep_search') return t.startsWith('no matches') ? 'no matches' : `${lines} matches`
   if (name === 'todo_write') return t.split('\n')[0] // "saved 3 todos (1 done)"
   if (name === 'web_search') return `${t.split('\n\n').length} results`
+  if (name === 'web_fetch') return t.startsWith('fetch failed') ? t.slice(0, 60) : `${lines} lines`
   if (name === 'run_command') return (t.split('\n').find((l) => l.trim()) ?? '').slice(0, 60)
   return t.slice(0, 60)
 }
@@ -231,6 +295,21 @@ function getRegistry() {
   return regCache.registry
 }
 
+// MCP servers (v3.1) — grafted onto the registry as mcp__<server>__<tool>,
+// exactly like the desktop app. One connect per config for the session; a bad
+// server prints a line and the chat goes on.
+let mcpCache = null
+async function getMcp() {
+  const servers = (settings.mcpServers ?? []).filter((s) => s && s.name && s.command && s.enabled !== false)
+  if (!servers.length) return null
+  const key = JSON.stringify(servers)
+  if (!mcpCache || mcpCache.key !== key) {
+    mcpCache = { key, ...(await mcpRegistryTools(servers)) }
+    for (const f of mcpCache.failures) console.log(red(`mcp: ${f.server} — ${f.error}`))
+  }
+  return mcpCache
+}
+
 async function turn(prompt) {
   let registry
   try {
@@ -240,6 +319,15 @@ async function turn(prompt) {
     return
   }
 
+  // v3.1 MCP: server tools join the registry + schema for this turn
+  let mcp = null
+  try {
+    mcp = await getMcp()
+  } catch (e) {
+    console.log(red(`mcp: ${e?.message ?? e}`))
+  }
+  if (mcp?.total) Object.assign(registry, mcp.entries)
+
   const messages = [
     { role: 'system', content: SYSTEM },
     ...history,
@@ -247,14 +335,21 @@ async function turn(prompt) {
   ]
 
   try {
-    const result = await runAgent({
-      messages,
-      registry,
-      approve,
-      onEvent,
-      callModel: call,
-      hooks: loadHooks(roots)
-    })
+    let result
+    try {
+      spinStart('thinking')
+      result = await runAgent({
+        messages,
+        registry,
+        tools: mcp?.schemas?.length ? [...TOOLS, ...mcp.schemas] : undefined,
+        approve,
+        onEvent,
+        callModel: call,
+        hooks: loadHooks(roots)
+      })
+    } finally {
+      spinStop() // output takes over from here
+    }
 
     history = result.messages // keep the chain: stateful across turns
 
@@ -281,10 +376,19 @@ async function oneShot(prompt) {
     console.error(`codezy: ${e.message}`)
     return 1
   }
+  // v3.1 MCP: same graft as the REPL turn
+  let mcp = null
+  try {
+    mcp = await getMcp()
+  } catch (e) {
+    console.error(`codezy: mcp: ${e?.message ?? e}`)
+  }
+  if (mcp?.total) Object.assign(registry, mcp.entries)
   try {
     const result = await runAgent({
       messages: [{ role: 'system', content: SYSTEM }, ...history, { role: 'user', content: prompt }],
       registry,
+      tools: mcp?.schemas?.length ? [...TOOLS, ...mcp.schemas] : undefined,
       approve,
       onEvent,
       callModel: call,
@@ -381,13 +485,106 @@ async function command(line) {
       }
       return true
     }
+    case '/mcp': {
+      const all = (settings.mcpServers ?? []).filter((s) => s && s.name && s.command)
+      if (!all.length) {
+        console.log(dim('no MCP servers configured — add them in the desktop app: Settings ▸ MCP servers'))
+        return true
+      }
+      console.log(dim('mcp servers:'))
+      let connected = 0
+      let live = 0
+      for (const s of all) {
+        if (s.enabled === false) {
+          console.log(`  ${dim('○')} ${bold(s.name)} ${dim('disabled')}`)
+          continue
+        }
+        live++
+        try {
+          const conn = await mcpGetSession(s.name, s)
+          connected++
+          const line = [s.command, ...(s.args ?? [])].join(' ')
+          console.log(
+            `  ${green('●')} ${bold(s.name)} ${dim(`${line} — ${conn.tools.length} tool${conn.tools.length === 1 ? '' : 's'}`)}`
+          )
+          if (conn.tools.length) console.log(dim(`      ${conn.tools.map((t) => t.name).join(', ')}`))
+        } catch (e) {
+          console.log(`  ${red('●')} ${bold(s.name)} ${red(String(e?.message ?? e))}`)
+        }
+      }
+      console.log(dim(`${connected}/${live} enabled server(s) connected`))
+      return true
+    }
+    case '/model':
+      if (!arg) {
+        console.log(
+          dim(`model ${MODEL} · endpoint ${URL}${PROVIDER ? ` (via ${PROVIDER.name || PROVIDER.id})` : ''} · ctx ${CTX}`)
+        )
+        return true
+      }
+      MODEL = arg.trim().split(/\s+/)[0]
+      console.log(dim(`model → ${MODEL} (this session only — set activeModel in settings to persist)`))
+      return true
+    case '/tools': {
+      console.log(dim(`tools · ${TOOLS.length} built in · gated: ${[...DANGEROUS_TOOLS].join(', ')}`))
+      for (const t of TOOLS) {
+        const name = t.function.name
+        const first = String(t.function.description ?? '').split('.')[0]
+        console.log(`  ${DANGEROUS_TOOLS.has(name) ? yellow('⚠') : green('·')} ${bold(name)} ${dim(first)}`)
+      }
+      const mcpNames = mcpCache?.total ? Object.keys(mcpCache.entries ?? {}) : []
+      if (mcpNames.length) {
+        console.log(dim(`mcp · ${mcpNames.length} more from connected servers`))
+        for (const n of mcpNames) console.log(`  ${green('·')} ${bold(n)}`)
+      } else {
+        console.log(dim('mcp · none connected — see /mcp'))
+      }
+      return true
+    }
+    case '/auto':
+      if (arg === 'on' || arg === 'off') auto = arg === 'on'
+      else if (arg) {
+        console.log(dim('usage: /auto [on|off]'))
+        return true
+      }
+      console.log(
+        `auto-approve ${auto ? green('on') : dim('off')}${auto ? yellow(' — gated tools run without asking') : ''}`
+      )
+      return true
+    case '/export': {
+      const file = path.resolve(arg || `codezy-session-${new Date().toISOString().replace(/[:.]/g, '-')}.md`)
+      try {
+        const out = [
+          '# CODEZY session',
+          `date: ${new Date().toISOString()}`,
+          `model: ${MODEL} · workspace: ${roots.join(', ')}`,
+          ''
+        ]
+        for (const m of history) {
+          const text = typeof m.content === 'string' ? m.content.trim() : ''
+          if (!text || m.role === 'tool' || m.role === 'system') continue
+          if (m.role === 'user') out.push('## You', '', text, '')
+          else if (m.role === 'assistant') out.push('## CODEZY', '', text, '')
+        }
+        fs.writeFileSync(file, out.join('\n'))
+        console.log(dim(`exported ${history.length} message(s) → ${file}`))
+      } catch (e) {
+        console.log(red(`export failed: ${e?.message ?? e}`))
+      }
+      return true
+    }
     case '/help':
       console.log(
         [
           `${bold('CODEZY v2')} — agent mode over the shared harness`,
           `  /root [dir]  show or set the workspace root`,
           `  /todos       show the agent's current checklist`,
+          `  /mcp         MCP servers: status + the tools they offer`,
           `  /search <q>  web search (DuckDuckGo) — runs instantly, no model needed`,
+          `  /model [id]  show or switch the model for this session`,
+          `  /tools       every tool the agent can call (incl. MCP)`,
+          `  /auto [on|off]  toggle auto-approval of gated tools`,
+          `  /export [f]  save the conversation to markdown`,
           `  /clear       forget the conversation chain`,
           `  /exit        quit`,
           `  model        ${MODEL}  (${URL})`,
@@ -406,6 +603,7 @@ let closed = false
 const queue = []
 
 function finish() {
+  mcpDisconnectAll() // server children must never outlive the TUI
   try {
     rl.close()
   } catch {
@@ -424,7 +622,9 @@ async function drain() {
     if (closed) break
   }
   busy = false
-  if (closed) finish()
+  if (closed) return finish()
+  // the prompt comes BACK once the output has landed — never above it
+  if (rl && process.stdin.isTTY) rl.prompt()
 }
 
 let cmdChain = Promise.resolve() // commands run serially even when async (/search)
@@ -434,25 +634,26 @@ const wire = !PRINT && rl ? rl : null
 
 wire?.on('line', (line) => {
   if (awaitingApproval) return // the approval question consumed this line
+  spinClear() // a typed line lands on a clean line
   const t = line.trim()
   // commands run right away — even while the model is still writing a reply
   if (t.startsWith('/')) {
     cmdChain = cmdChain
       .then(async () => {
         if (await command(t)) {
-          if (process.stdin.isTTY) rl.prompt()
+          if (!busy && process.stdin.isTTY) rl.prompt()
           return
         }
         queue.push(line)
         void drain()
-        if (process.stdin.isTTY) rl.prompt()
+        if (!busy && process.stdin.isTTY) rl.prompt()
       })
       .catch((e) => console.log(red(`command failed: ${e?.message ?? e}`)))
     return
   }
   queue.push(line)
   void drain()
-  if (process.stdin.isTTY) rl.prompt()
+  if (!busy && process.stdin.isTTY) rl.prompt() // busy → the spinner holds the line
 })
 
 wire?.on('close', () => {
@@ -473,6 +674,7 @@ if (PRINT) {
     process.exit(2)
   }
   const code = await oneShot(prompt)
+  mcpDisconnectAll() // server children must never outlive the run
   if (rl) {
     try {
       rl.close()
@@ -495,7 +697,8 @@ if (TTY) {
       (MODEL.startsWith('qwen2.5-coder')
         ? `${yellow('note: qwen2.5-coder has no native function calling — llama3.1:8b works for tools')}\n`
         : '') +
-      `${dim('type /help · /root · /search · /exit\n')}`
+      `${dim('type /help · /mcp · /root · /search · /model · /export · /exit')}\n` +
+      `${dim('TAB completes commands')}\n`
   )
 }
 if (rl) rl.prompt()

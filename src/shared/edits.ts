@@ -167,3 +167,101 @@ export function stripEditBlocks(text: string): string {
   out = out.replace(/(?:^|\n)===FILE(?::|[ \t]+)[\s\S]*$/, '\n')
   return out.replace(/\n{3,}/g, '\n\n')
 }
+
+// -- hunks (v3 review-first editing) -------------------------------------------
+// A diff the user can review PIECEWISE: changes are grouped into hunks
+// (a run of +/− lines with up to `ctx` context lines around it; two change
+// runs separated by only a little context merge into one hunk). Selecting a
+// subset of hunks and composing the result is what "accept 2 of 3 hunks"
+// means — the untouched hunks are simply written back as their old lines.
+
+export interface DiffHunk {
+  id: number
+  /** Index range [start, end) this hunk covers in the diff it came from. */
+  start: number
+  end: number
+  /** Context + change lines, in diff order (context makes it readable). */
+  lines: DiffLine[]
+  added: number
+  removed: number
+}
+
+/** Groups a diff into reviewable hunks. Change runs within `ctx * 2`
+ *  unchanged lines merge; each hunk keeps up to `ctx` context lines. */
+export function toHunks(diff: DiffLine[], ctx = 3): DiffHunk[] {
+  const hunks: DiffHunk[] = []
+  let id = 0
+  let i = 0
+  while (i < diff.length) {
+    if (diff[i].type === 'ctx') {
+      i++
+      continue
+    }
+    // a change run starts here — pull back over up to ctx context lines
+    let start = i
+    while (start > 0 && i - start < ctx && diff[start - 1].type === 'ctx') start--
+    let j = i
+    let stoppedInCtx = false
+    while (j < diff.length) {
+      if (diff[j].type !== 'ctx') {
+        j++
+        continue
+      }
+      let k = j
+      while (k < diff.length && diff[k].type === 'ctx') k++
+      // merge when the next change is close enough to belong to this hunk
+      if (k < diff.length && k - j <= ctx * 2) {
+        j = k
+        continue
+      }
+      stoppedInCtx = true
+      break
+    }
+    // keep up to ctx trailing context lines when the run stopped in one
+    const end = stoppedInCtx ? Math.min(j + ctx, diff.length) : j
+    const lines = diff.slice(start, end)
+    const added = lines.filter((l) => l.type === 'add').length
+    const removed = lines.filter((l) => l.type === 'del').length
+    if (added || removed) hunks.push({ id: id++, start, end, lines, added, removed })
+    i = j > i ? j : i + 1
+  }
+  return hunks
+}
+
+/**
+ * Rebuilds the file keeping only the SELECTED hunks: kept hunks contribute
+ * their `+` lines, skipped ones fall back to their `−` (old) lines, and the
+ * context between them passes through unchanged. Selection is by hunk id;
+ * hunks must come from `toHunks()` on a diff with the SAME shape as the one
+ * passed here (matching by line POSITION, not object identity).
+ * Returns the full new text, ready to hand to the write engine.
+ */
+export function composeHunks(diff: DiffLine[], hunks: DiffHunk[], keep: number[] | Set<number>): string {
+  const keepSet = keep instanceof Set ? keep : new Set(keep)
+  // which hunk (if any) owns each diff line — -1 = untouched context
+  const owner = new Int32Array(diff.length).fill(-1)
+  for (const h of hunks) {
+    if (keepSet.has(h.id)) {
+      for (let i = h.start; i < h.end && i < diff.length; i++) owner[i] = h.id
+    }
+  }
+  const out: string[] = []
+  for (let i = 0; i < diff.length; i++) {
+    const line = diff[i]
+    if (owner[i] !== -1) {
+      if (line.type !== 'del') out.push(line.text) // kept hunk: adds + context
+    } else if (line.type === 'ctx') {
+      out.push(line.text) // context between/around hunks
+    } else {
+      // a skipped hunk falls back to its OLD lines: dels stay, adds go
+      const inSkipped = hunks.some((h) => i >= h.start && i < h.end)
+      if (inSkipped && line.type === 'del') out.push(line.text)
+    }
+  }
+  return out.join('\n')
+}
+
+/** added/removed counts for a proposed replacement (shared by UI + store). */
+export function changeCounts(search: string, replace: string, isNew = false): { added: number; removed: number } {
+  return countChanges({ path: '', search, replace, isNew })
+}

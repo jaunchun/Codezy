@@ -34,6 +34,40 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     hint: 'one key, hundreds of models — openrouter.ai'
   },
   {
+    id: 'groq',
+    name: 'Groq',
+    baseUrl: 'https://api.groq.com/openai/v1',
+    defaultModel: 'llama-3.3-70b-versatile',
+    hint: 'very fast inference — console.groq.com'
+  },
+  {
+    id: 'deepseek',
+    name: 'DeepSeek',
+    baseUrl: 'https://api.deepseek.com/v1',
+    defaultModel: 'deepseek-chat',
+    hint: 'DeepSeek V3/R1 — platform.deepseek.com'
+  },
+  {
+    id: 'together',
+    name: 'Together AI',
+    baseUrl: 'https://api.together.xyz/v1',
+    hint: 'open-weight models, pay per token — together.ai'
+  },
+  {
+    id: 'mistral',
+    name: 'Mistral',
+    baseUrl: 'https://api.mistral.ai/v1',
+    defaultModel: 'codestral-latest',
+    hint: 'Mistral + Codestral — console.mistral.ai'
+  },
+  {
+    id: 'openai',
+    name: 'OpenAI',
+    baseUrl: 'https://api.openai.com/v1',
+    defaultModel: 'gpt-4o-mini',
+    hint: 'GPT-4o / o-series — platform.openai.com'
+  },
+  {
     id: 'lm-studio',
     name: 'LM Studio',
     baseUrl: 'http://localhost:1234/v1',

@@ -1,0 +1,585 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta name="google-site-verification" content="1Jx6o3PEPodwnycBmufKH-e_-1cTlhxuInv9c7URuiA" />
+<!-- Add inside the site's <head>. Adjust the description to match the live product. -->
+<title>CODEZY — AI coding assistant for desktop and terminal</title>
+<meta name="description" content="CODEZY helps you work on code with AI-assisted planning, file changes, and undo support across desktop and terminal workflows.">
+<link rel="canonical" href="https://codezy.kajtgorski.workers.dev/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="CODEZY — AI coding assistant for desktop and terminal">
+<meta property="og:description" content="CODEZY helps you work on code with AI-assisted planning, file changes, and undo support across desktop and terminal workflows.">
+<meta property="og:url" content="https://codezy.kajtgorski.workers.dev/">
+
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CODEZY — local-first AI coding agent</title>
+  <meta name="description" content="CODEZY is a Claude Code-style chat and coding agent for Ollama and OpenAI-compatible models — a desktop app plus a matching terminal TUI. Local first, cloud ready." />
+  <meta name="color-scheme" content="dark light" />
+  <meta property="og:title" content="CODEZY — local-first AI coding agent" />
+  <meta property="og:description" content="Chat with your models, edit files, run commands — on the desktop and in your terminal." />
+  <meta property="og:type" content="website" />
+  <!-- When deployed, replace the relative og:image with an absolute URL. -->
+  <meta property="og:image" content="icon.png" />
+  <meta name="theme-color" content="#101018" />
+  <link rel="icon" href="icon.png" />
+  <script>
+    /* Theme + motion mode before first paint — no flash, no-JS safe. */
+    (function () {
+      var d = document.documentElement;
+      try {
+        var t = localStorage.getItem('codezy-site-theme');
+        if (t === 'light' || t === 'dark') d.dataset.theme = t;
+        else if (matchMedia('(prefers-color-scheme: light)').matches) d.dataset.theme = 'light';
+      } catch (e) { /* private mode — fall back to dark */ }
+      if (!matchMedia('(prefers-reduced-motion: reduce)').matches) d.classList.add('anim');
+      /* Safety net: if app.js never runs, don't leave content hidden. */
+      setTimeout(function () {
+        if (!document.querySelector('.reveal.in')) d.classList.remove('anim');
+      }, 3500);
+    })();
+  </script>
+  <link rel="preload" href="fonts/geist-800.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="fonts/geist-400.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="fonts/geistmono-400.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <!-- ============================ NAV ============================ -->
+  <header class="nav">
+    <div class="nav-inner">
+      <a class="brand" href="#top" aria-label="CODEZY home">
+        <span class="brand-sq" aria-hidden="true">
+          <!-- the app's own cube mark (src/renderer/src/components/Icons.tsx) -->
+          <svg class="mark" viewBox="0 0 128 128" fill="none">
+            <path fill="currentColor" fill-rule="evenodd" d="M 53.6,14 Q 64,8 74.4,14 L 102.1,30 Q 112.5,36 112.5,48 L 112.5,80 Q 112.5,92 102.1,98 L 74.4,114 Q 64,120 53.6,114 L 25.9,98 Q 15.5,92 15.5,80 L 15.5,48 Q 15.5,36 25.9,30 Z M 59.1,67.4 Q 64,64 68.9,67.4 L 91.1,82.6 Q 96,86 91.1,89.4 L 68.9,104.6 Q 64,108 59.1,104.6 L 36.9,89.4 Q 32,86 36.9,82.6 Z" />
+          </svg>
+        </span>
+        <span class="brand-name">CODEZY</span>
+      </a>
+
+      <nav class="nav-links" aria-label="Sections">
+        <a href="#features" data-navlink="features">Features</a>
+        <a href="#modes" data-navlink="modes">Modes</a>
+        <a href="#terminal" data-navlink="terminal">Terminal</a>
+        <a href="#motion" data-navlink="motion">Motion</a>
+        <a href="#install" data-navlink="install">Install</a>
+      </nav>
+
+      <div class="nav-actions">
+        <a class="nav-repo" href="https://github.com/jaunchun/Codezy" rel="noopener">GitHub</a>
+        <button class="theme-toggle" type="button" aria-label="Switch to light theme">
+          <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5Z" fill="currentColor" /></svg>
+          <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="4.2" fill="currentColor" />
+            <g stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <path d="M12 2.6v2.4M12 19v2.4M2.6 12h2.4M19 12h2.4M5.3 5.3l1.7 1.7M17 17l1.7 1.7M18.7 5.3 17 7M7 17l-1.7 1.7" />
+            </g>
+          </svg>
+        </button>
+        <a class="btn primary sm" href="https://github.com/jaunchun/Codezy/releases/latest">Download for Windows</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <span id="top"></span>
+
+    <!-- ============================ HERO ============================ -->
+    <section class="hero">
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <p class="kicker reveal">// local-first coding agent &middot; v3.0.0 &middot; MIT</p>
+          <h1 class="reveal" style="--i:1"><span class="l">Claude Code&ndash;style chat,</span> <span class="l">for <span class="hl">your models.</span></span></h1>
+          <p class="lede reveal" style="--i:2">A coding agent that reads and edits your files, runs commands and keeps todos &mdash; on the desktop and in your terminal.</p>
+          <div class="cta-row reveal" style="--i:3">
+            <a class="btn primary" href="https://github.com/jaunchun/Codezy/releases/latest">Download for Windows</a>
+            <a class="btn ghost" href="https://github.com/jaunchun/Codezy" rel="noopener">View on GitHub</a>
+          </div>
+        </div>
+
+        <!-- A real miniature of the product UI: chat, tool trace, approval gate. -->
+        <div class="hero-visual">
+          <div class="win" role="img" aria-label="CODEZY chat window: you ask for error handling, the agent reads and edits a file with a timed tool trace, asks for approval to run npm test, and finishes the reply.">
+            <div class="win-bar" aria-hidden="true">
+              <span class="win-dot"></span><span class="win-dot"></span><span class="win-dot"></span>
+              <span class="win-title">CODEZY &mdash; fetch-layer</span>
+              <span class="win-badge">build</span>
+            </div>
+            <div class="win-body" aria-hidden="true">
+              <div class="chatline step" style="--s:.1">
+                <span class="who">you</span>
+                <p class="bubble">Add error handling to the fetch layer.</p>
+              </div>
+              <div class="chatline step" style="--s:.7">
+                <span class="who ai">C</span>
+                <p class="bubble">Reading <code>src/api/fetch.ts</code> first.</p>
+              </div>
+
+              <div class="traceline step" style="--s:1.3">
+                <div class="t-head">2 tool steps</div>
+                <ul class="t-list">
+                  <li class="step" style="--s:1.5">
+                    <span class="tick ok">&#10003;</span>
+                    <span class="t-name">read file <code>src/api/fetch.ts</code></span>
+                    <span class="chip">142ms</span>
+                  </li>
+                  <li class="step" style="--s:1.75">
+                    <span class="tick ok">&#10003;</span>
+                    <span class="t-name">edit file <code>src/api/fetch.ts</code></span>
+                    <span class="chip">1.4s</span>
+                    <span class="chip">612 B</span>
+                  </li>
+                </ul>
+              </div>
+
+              <div class="ask step" style="--s:2.3">
+                <span class="ask-tag">wants to run</span>
+                <code class="ask-cmd">npm test</code>
+                <span class="ask-btns">
+                  <span class="mini">Deny</span>
+                  <span class="mini primary">Approve</span>
+                </span>
+              </div>
+
+              <div class="chatline step" style="--s:2.9">
+                <span class="who ai">C</span>
+                <p class="bubble"><span class="type" data-text="Wrapped every call in try/catch with retries. The approved run came back green: 42/42.">Wrapped every call in try/catch with retries. The approved run came back green: 42/42.</span><span class="caret" aria-hidden="true"></span></p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================ STATUS BAR ============================ -->
+    <section class="facts" aria-label="At a glance">
+      <ul class="facts-row">
+        <li>v3.0.0</li>
+        <li>MIT licence</li>
+        <li>1,184 checks</li>
+        <li>Electron 44</li>
+        <li>Node.js LTS</li>
+        <li>Windows-first</li>
+      </ul>
+    </section>
+
+    <!-- ============================ 01 · FEATURES ============================ -->
+    <section id="features" class="section">
+      <header class="sec-head reveal">
+        <div class="sec-rule">
+          <span class="sec-index" aria-hidden="true">01</span>
+          <h2>Everything lives beside the chat.</h2>
+          <span class="sec-note" aria-hidden="true">// files &middot; diffs &middot; history &middot; shortcuts</span>
+        </div>
+        <p class="sec-lede">Not a textbox over a model &mdash; files, diffs, history, memory and shortcuts living in one window.</p>
+      </header>
+
+      <div class="bento">
+        <!-- 1. cowork pane (big, tinted) -->
+        <article class="cell cell-cowork reveal" style="--i:0">
+          <div class="mini-tree" aria-hidden="true">
+            <div class="tr-folder">src <span class="tr-meta">api</span></div>
+            <div class="tr-file">fetch.ts <span class="tr-badge">M</span></div>
+            <div class="tr-file active">retry.ts <span class="ai-cursor">CODEZY</span></div>
+            <div class="tr-file">parse.ts</div>
+            <div class="tr-folder">tests <span class="tr-meta">2 files</span></div>
+          </div>
+          <h3>The workspace next to the conversation</h3>
+          <p>Press <kbd>Ctrl</kbd><kbd>E</kbd>: browse the linked folder, open files beside the chat and watch the agent&rsquo;s cursor move as it writes.</p>
+        </article>
+
+        <!-- 2. safe edits (code) -->
+        <article class="cell cell-diff reveal" style="--i:1">
+          <div class="mini-diff" aria-hidden="true">
+            <div class="d-line del"><span class="d-g">&minus;</span>const data = await res.json()</div>
+            <div class="d-line add"><span class="d-g">+</span>const data = await res.json()</div>
+            <div class="d-line add"><span class="d-g">+</span>} catch (e) { retry(e) }</div>
+            <div class="d-bar"><span>Accept hunk</span><span class="d-undo">/undo</span></div>
+          </div>
+          <h3>Every edit previewed, every edit backed up</h3>
+          <p>Review the diff hunk by hunk, keep exactly what you want, and one <code>/undo</code> steps the whole batch back.</p>
+        </article>
+
+        <!-- 3. MCP -->
+        <article class="cell cell-mcp reveal" style="--i:2">
+          <div class="mini-chips" aria-hidden="true">
+            <span class="chip on">mcp__github__search_issues</span>
+            <span class="chip">mcp__postgres__query</span>
+            <span class="chip">mcp__files__read</span>
+          </div>
+          <h3>Bring your own tools</h3>
+          <p>Add any stdio MCP server in Settings; its tools join the agent in build mode. One broken server never blocks a run.</p>
+        </article>
+
+        <!-- 4. history -->
+        <article class="cell cell-history reveal" style="--i:3">
+          <div class="mini-hist" aria-hidden="true">
+            <div class="h-row"><span class="h-time">14:02</span><span>3 files</span><span class="h-act">restore</span></div>
+            <div class="h-row"><span class="h-time">13:47</span><span>1 file</span><span class="h-act">restore</span></div>
+            <div class="h-row"><span class="h-time">13:12</span><span>6 files</span><span class="h-act">restore</span></div>
+          </div>
+          <h3>Time travel for your files</h3>
+          <p><code>/history</code> lists every safety copy taken before a write. Restore any point &mdash; confinement and a binary guard included.</p>
+        </article>
+
+        <!-- 5. memory + skills -->
+        <article class="cell cell-memory reveal" style="--i:4">
+          <div class="mini-chips" aria-hidden="true">
+            <span class="chip ok-chip"># tabs, not spaces</span>
+            <span class="chip">/remember</span>
+            <span class="chip">/skill tdd</span>
+          </div>
+          <h3>It remembers</h3>
+          <p>Pin facts to <code>memory.md</code> with <code># fact</code>, and switch on prompt playbooks with <code>/skill</code>.</p>
+        </article>
+
+        <!-- 6. palette strip (wide) -->
+        <article class="cell cell-palette reveal" style="--i:5">
+          <div class="mini-keys" aria-hidden="true">
+            <span class="key"><kbd>Ctrl</kbd><kbd>K</kbd> command palette</span>
+            <span class="key"><kbd>Ctrl</kbd><kbd>U</kbd> usage dashboard</span>
+            <span class="key"><kbd>Ctrl</kbd><kbd>F</kbd> find in chat</span>
+            <span class="key"><kbd>Ctrl</kbd><kbd>/</kbd> cheat sheet</span>
+          </div>
+          <div class="palette-text">
+            <h3>Your hands stay on the keyboard</h3>
+            <p>Thirty-plus shortcuts, a Ctrl+K palette over every command, and <kbd>Esc</kbd> closes whatever is open.</p>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- ============================ 02 · MODES ============================ -->
+    <section id="modes" class="section">
+      <header class="sec-head reveal">
+        <div class="sec-rule">
+          <span class="sec-index" aria-hidden="true">02</span>
+          <h2>Pick your level of trust.</h2>
+          <span class="sec-note" aria-hidden="true">// plan &rarr; build &rarr; auto</span>
+        </div>
+        <p class="sec-lede">Plan asks, build shows you the diff, auto applies. Every write is backed up either way.</p>
+      </header>
+
+      <div class="modes reveal">
+        <div class="tablist" role="tablist" aria-label="Agent modes">
+          <button class="tab" id="tab-plan" role="tab" aria-selected="true" aria-controls="panel-plan" type="button">plan</button>
+          <button class="tab" id="tab-build" role="tab" aria-selected="false" aria-controls="panel-build" tabindex="-1" type="button">build</button>
+          <button class="tab" id="tab-auto" role="tab" aria-selected="false" aria-controls="panel-auto" tabindex="-1" type="button">auto</button>
+          <span class="effort" aria-hidden="true">effort&nbsp;<b>light</b>&nbsp;&middot;&nbsp;<b>medium</b>&nbsp;&middot;&nbsp;<b>deep</b></span>
+        </div>
+
+        <div class="tabpanel" id="panel-plan" role="tabpanel" aria-labelledby="tab-plan" tabindex="0">
+          <div class="tab-copy">
+            <h3>Advice only</h3>
+            <p>The registry refuses mutating tools in plan mode. The agent reads, greps and reasons, then hands you a plan &mdash; nothing on disk changes.</p>
+          </div>
+          <div class="tab-visual" aria-hidden="true">
+            <div class="mini-suggest">
+              <span class="ms-tag">suggestion</span>
+              <code>wrap parse() in try/catch &rarr; src/parse.ts:12</code>
+              <span class="ms-note">no files touched</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="tabpanel" id="panel-build" role="tabpanel" aria-labelledby="tab-build" tabindex="0" hidden>
+          <div class="tab-copy">
+            <h3>You accept every edit</h3>
+            <p>Each change arrives as a real diff you review hunk by hunk. Accept, always-allow or decline &mdash; and it is saved with a backup before anything lands.</p>
+          </div>
+          <div class="tab-visual" aria-hidden="true">
+            <div class="mini-diff lg">
+              <div class="d-line del"><span class="d-g">&minus;</span>export function parse(s) {</div>
+              <div class="d-line add"><span class="d-g">+</span>export function parse(s) {</div>
+              <div class="d-line add"><span class="d-g">+</span>&nbsp;&nbsp;try { return JSON.parse(s) }</div>
+              <div class="d-bar"><span class="d-pri">Accept</span><span>Always</span><span>Decline</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tabpanel" id="panel-auto" role="tabpanel" aria-labelledby="tab-auto" tabindex="0" hidden>
+          <div class="tab-copy">
+            <h3>Edits apply immediately</h3>
+            <p>For the ones who already trust it: writes land straight away, still snapshotted first. <code>/undo</code> reverts the batch, <code>/history</code> goes further back.</p>
+          </div>
+          <div class="tab-visual" aria-hidden="true">
+            <div class="mini-applied">
+              <span class="ok-dot">&#10003;</span>
+              <div>
+                <strong>src/api/fetch.ts</strong>
+                <span>backup written &middot; <code>/undo</code> reverts</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================ 03 · TWO SHELLS ============================ -->
+    <section id="terminal" class="section">
+      <header class="sec-head reveal">
+        <div class="sec-rule">
+          <span class="sec-index" aria-hidden="true">03</span>
+          <h2>One brain, two shells.</h2>
+          <span class="sec-note" aria-hidden="true">// electron + terminal</span>
+        </div>
+        <p class="sec-lede">The desktop app and the <code>codezy</code> CLI run the same harness &mdash; same tools, same approval gate, same hooks.</p>
+      </header>
+
+      <div class="duo">
+        <div class="duo-panel reveal">
+          <div class="win slim" aria-hidden="true">
+            <div class="win-bar">
+              <span class="win-dot"></span><span class="win-dot"></span><span class="win-dot"></span>
+              <span class="win-title">CODEZY &mdash; desktop</span>
+            </div>
+            <div class="duo-app">
+              <div class="da-side">
+                <span class="da-row on">fetch-layer</span>
+                <span class="da-row">api cleanup</span>
+                <span class="da-row">release notes</span>
+              </div>
+              <div class="da-chat">
+                <span class="da-msg user"></span>
+                <span class="da-msg"></span>
+                <span class="da-msg short"></span>
+              </div>
+            </div>
+          </div>
+          <p class="duo-cap">the Electron window &mdash; cowork pane, diff previews, themes, images</p>
+        </div>
+
+        <div class="duo-panel reveal" style="--i:1">
+          <div class="win slim term" aria-hidden="true">
+            <div class="win-bar">
+              <span class="win-dot"></span><span class="win-dot"></span><span class="win-dot"></span>
+              <span class="win-title">powershell &mdash; codezy</span>
+            </div>
+            <div class="term-body">
+              <p><span class="t-prompt">$</span> npm link</p>
+              <p><span class="t-prompt">$</span> codezy</p>
+              <p class="t-dim">CODEZY v2 &mdash; agent mode over the shared harness</p>
+              <p class="t-dim">model&nbsp;&nbsp;&nbsp;&nbsp;qwen2.5-coder:7b&nbsp;&nbsp;(ollama)</p>
+              <p><span class="t-prompt">&gt;</span> /todos</p>
+              <p class="t-ok">+ fix retry logic</p>
+              <p class="t-ok">+ add backoff &nbsp;<span class="t-dim">done</span></p>
+            </div>
+          </div>
+          <p class="duo-cap">the terminal companion &mdash; no build needed, 33 commands, vim mode</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================ 04 · IN MOTION ============================ -->
+    <section id="motion" class="section band">
+      <header class="sec-head reveal">
+        <div class="sec-rule">
+          <span class="sec-index" aria-hidden="true">04</span>
+          <h2>See it move.</h2>
+          <span class="sec-note" aria-hidden="true">// real footage &middot; no mockups</span>
+        </div>
+        <p class="sec-lede">Fifteen seconds of the app, then five close-ups &mdash; recorded straight from CODEZY on Windows.</p>
+      </header>
+
+      <div class="shots">
+        <figure class="film reveal">
+          <div class="shot-bar">
+            <span class="shot-badge">PROMO &middot; 15 S</span>
+            <span class="shot-note">mp4 &middot; sound on</span>
+          </div>
+          <video controls preload="metadata" playsinline poster="media/promo-poster.jpg">
+            <source src="media/codezy-promo-15s.mp4" type="video/mp4" />
+            Your browser cannot play this file &mdash;
+            <a href="media/codezy-promo-15s.mp4">download the clip</a>.
+          </video>
+          <figcaption>
+            <strong>The fifteen-second tour</strong>
+            <span>Every layer of the product in one take.</span>
+          </figcaption>
+        </figure>
+
+        <figure class="shot reveal" style="--i:0">
+          <div class="shot-bar">
+            <span class="shot-badge">CODE &middot; PREVIEW &middot; ACCEPT</span>
+            <span class="shot-note">gif</span>
+          </div>
+          <img src="media/codezy-code.gif" alt="CODEZY answering a prompt with a syntax-highlighted TypeScript block and a preview-before-accept edit bar." width="880" height="550" loading="lazy" decoding="async" />
+          <figcaption>
+            <strong>Code</strong>
+            <span>Highlighted blocks, one-click copy, preview before accept.</span>
+          </figcaption>
+        </figure>
+
+        <figure class="shot reveal" style="--i:1">
+          <div class="shot-bar">
+            <span class="shot-badge">THEME &middot; LIGHT &middot; BLUE</span>
+            <span class="shot-note">gif</span>
+          </div>
+          <img src="media/codezy-themes.gif" alt="CODEZY switching its theme and accent colour live, sidebar and chats visible." width="880" height="550" loading="lazy" decoding="async" />
+          <figcaption>
+            <strong>Themes</strong>
+            <span>Dark, light, acrylic &mdash; seven accents, switched live.</span>
+          </figcaption>
+        </figure>
+
+        <figure class="shot reveal" style="--i:2">
+          <div class="shot-bar">
+            <span class="shot-badge">SWITCH OLLAMA MODELS</span>
+            <span class="shot-note">gif</span>
+          </div>
+          <img src="media/codezy-models.gif" alt="CODEZY switching the active Ollama model while a regex-explanation chat stays open." width="880" height="550" loading="lazy" decoding="async" />
+          <figcaption>
+            <strong>Models</strong>
+            <span>Swap the Ollama model mid-thread; cloud endpoints too.</span>
+          </figcaption>
+        </figure>
+
+        <figure class="shot reveal" style="--i:3">
+          <div class="shot-bar">
+            <span class="shot-badge">STREAMING REPLIES</span>
+            <span class="shot-note">gif</span>
+          </div>
+          <img src="media/codezy-speed.gif" alt="CODEZY empty state with a reply streaming token by token into the chat." width="880" height="550" loading="lazy" decoding="async" />
+          <figcaption>
+            <strong>Streaming</strong>
+            <span>Tokens arrive as they are generated &mdash; no spinner theatre.</span>
+          </figcaption>
+        </figure>
+
+        <figure class="shot reveal" style="--i:4">
+          <div class="shot-bar">
+            <span class="shot-badge">EFFORT &amp; MODE</span>
+            <span class="shot-note">gif</span>
+          </div>
+          <img src="media/codezy-effortmode.gif" alt="CODEZY edit approval bar offering Always, Accept and Decline for a proposed change." width="880" height="550" loading="lazy" decoding="async" />
+          <figcaption>
+            <strong>Effort &amp; mode</strong>
+            <span>Plan, build, auto &mdash; accept, always-allow or decline each edit.</span>
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <!-- ============================ 05 · ENGINES ============================ -->
+    <section id="engines" class="section">
+      <header class="sec-head reveal">
+        <div class="sec-rule">
+          <span class="sec-index" aria-hidden="true">05</span>
+          <h2>Local first, cloud ready.</h2>
+          <span class="sec-note" aria-hidden="true">// ollama first &middot; clouds welcome</span>
+        </div>
+        <p class="sec-lede">CODEZY starts <code>ollama serve</code> for you on launch &mdash; or point it at any OpenAI-compatible endpoint.</p>
+      </header>
+
+      <div class="mq-wrap reveal">
+        <span class="mq-label" aria-hidden="true">WORKS WITH</span>
+        <div class="marquee" role="list" aria-label="Supported engines and providers">
+          <div class="marquee-track">
+            <span class="pill" role="listitem">Ollama</span>
+            <span class="pill" role="listitem">Nebius Token Factory</span>
+            <span class="pill" role="listitem">OpenRouter</span>
+            <span class="pill" role="listitem">Groq</span>
+            <span class="pill" role="listitem">DeepSeek</span>
+            <span class="pill" role="listitem">Together AI</span>
+            <span class="pill" role="listitem">Mistral</span>
+            <span class="pill" role="listitem">OpenAI</span>
+            <span class="pill" role="listitem">LM Studio</span>
+            <span class="pill" role="listitem">any OpenAI-compatible API</span>
+            <!-- duplicate for the seamless loop -->
+            <span class="pill" aria-hidden="true">Ollama</span>
+            <span class="pill" aria-hidden="true">Nebius Token Factory</span>
+            <span class="pill" aria-hidden="true">OpenRouter</span>
+            <span class="pill" aria-hidden="true">Groq</span>
+            <span class="pill" aria-hidden="true">DeepSeek</span>
+            <span class="pill" aria-hidden="true">Together AI</span>
+            <span class="pill" aria-hidden="true">Mistral</span>
+            <span class="pill" aria-hidden="true">OpenAI</span>
+            <span class="pill" aria-hidden="true">LM Studio</span>
+            <span class="pill" aria-hidden="true">any OpenAI-compatible API</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================ 06 · INSTALL ============================ -->
+    <section id="install" class="section install">
+      <header class="sec-head reveal">
+        <div class="sec-rule">
+          <span class="sec-index" aria-hidden="true">06</span>
+          <h2>Running in three commands.</h2>
+          <span class="sec-note" aria-hidden="true">// node &middot; ollama &middot; done</span>
+        </div>
+      </header>
+
+      <div class="install-grid">
+        <div class="term-card reveal" aria-label="Install commands">
+          <div class="term-head">
+            <span class="win-dot"></span><span class="win-dot"></span><span class="win-dot"></span>
+            <span class="term-title">powershell</span>
+          </div>
+          <div class="term-lines">
+            <div class="t-line">
+              <code><span class="t-dim"># 1 &mdash; install and build</span></code>
+            </div>
+            <div class="t-line">
+              <code><span class="t-prompt">$</span> npm install</code>
+              <button class="copy" type="button" data-copy="npm install" aria-label="Copy npm install">copy</button>
+            </div>
+            <div class="t-line">
+              <code><span class="t-prompt">$</span> npm run build</code>
+              <button class="copy" type="button" data-copy="npm run build" aria-label="Copy npm run build">copy</button>
+            </div>
+            <div class="t-line">
+              <code><span class="t-prompt">$</span> npm run preview</code>
+              <button class="copy" type="button" data-copy="npm run preview" aria-label="Copy npm run preview">copy</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="install-copy reveal" style="--i:1">
+          <p class="install-lede">Install <a href="https://nodejs.org" rel="noopener">Node.js LTS</a> and <a href="https://ollama.com/download" rel="noopener">Ollama</a>, pull the default model <code>qwen2.5-coder:7b</code>, then build. Prefer the terminal? <code>node cli/index.mjs</code> needs no build at all.</p>
+          <div class="cta-row">
+            <a class="btn primary" href="https://github.com/jaunchun/Codezy/releases/latest">Download for Windows</a>
+            <a class="btn ghost" href="https://github.com/jaunchun/Codezy#installation" rel="noopener">Full install guide &nearr;</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============================ FOOTER ============================ -->
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <span class="brand-sq" aria-hidden="true">
+          <svg class="mark" viewBox="0 0 128 128" fill="none">
+            <path fill="currentColor" fill-rule="evenodd" d="M 53.6,14 Q 64,8 74.4,14 L 102.1,30 Q 112.5,36 112.5,48 L 112.5,80 Q 112.5,92 102.1,98 L 74.4,114 Q 64,120 53.6,114 L 25.9,98 Q 15.5,92 15.5,80 L 15.5,48 Q 15.5,36 25.9,30 Z M 59.1,67.4 Q 64,64 68.9,67.4 L 91.1,82.6 Q 96,86 91.1,89.4 L 68.9,104.6 Q 64,108 59.1,104.6 L 36.9,89.4 Q 32,86 36.9,82.6 Z" />
+          </svg>
+        </span>
+        <div>
+          <strong>CODEZY</strong>
+          <span>Local first, cloud ready.</span>
+        </div>
+      </div>
+      <nav class="footer-links" aria-label="Footer">
+        <a href="#features">Features</a>
+        <a href="#modes">Modes</a>
+        <a href="#terminal">Terminal</a>
+        <a href="#motion">Motion</a>
+        <a href="#install">Install</a>
+        <a href="https://github.com/jaunchun/Codezy/releases" rel="noopener">Releases</a>
+        <a href="https://github.com/jaunchun/Codezy" rel="noopener">GitHub</a>
+        <a href="https://github.com/jaunchun/Codezy#readme" rel="noopener">README</a>
+        <a href="https://github.com/jaunchun/Codezy#license" rel="noopener">MIT licence</a>
+      </nav>
+      <p class="footer-fine">Independent open-source project. v3.0.0.</p>
+    </div>
+  </footer>
+
+  <div class="sr-only" aria-live="polite" id="live"></div>
+  <script src="app.js" defer></script>
+</body>
+</html>

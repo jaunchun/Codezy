@@ -12,10 +12,13 @@ export interface ChatMessage {
   model?: string // which model produced an assistant reply
   /** Attachments: chips in the UI, expanded into text only for the model. */
   files?: { path: string; content: string }[]
+  /** Image attachments as data URLs — real vision input for capable models
+   *  (Ollama `images` / OpenAI `image_url` parts). Filled by buildMessages. */
+  images?: string[]
   /** Internal turns (e.g. the /review request) — sent to the model, never drawn as a bubble. */
   hidden?: boolean
   /** Agent tool steps that produced this reply — collapsible preview in the UI (v1.5). */
-  trace?: { name: string; ok: boolean }[]
+  trace?: { name: string; ok: boolean; ms?: number; size?: number }[]
 }
 
 export interface Session {
@@ -36,12 +39,17 @@ export interface Session {
   skill?: string | null
   /** Message ids whose proposed edits were accepted or declined (hides the bar). */
   resolvedEdits?: string[]
+  /** Edit blocks already written by a PARTIAL accept, per message id — the
+   *  bar keeps offering the rest instead of re-applying what landed. */
+  appliedEdits?: Record<string, number[]>
   /** Per-chat generation overrides — absent = follow the global settings. */
   model?: string
   provider?: string
   effort?: EffortLevel
   /** Pinned to the top of the sidebar chat list. */
   pinned?: boolean
+  /** Archived — hidden from the sidebar unless "show archived" is on. */
+  archived?: boolean
 }
 
 /** Project = a folder of work (and optionally a real directory on disk). */
@@ -67,10 +75,19 @@ export interface ProviderConfig {
 }
 
 /**
- * Shared between app and terminal: dark/light/acrylic are app surfaces,
+ * Shared between app and terminal: dark/light/acrylic/singularity are app
+ * surfaces (singularity is the animated black-hole backdrop),
  * midnight/ember/mint/slate are accent palettes (the terminal /theme names).
  */
-export type ThemeName = 'dark' | 'light' | 'acrylic' | 'midnight' | 'ember' | 'mint' | 'slate'
+export type ThemeName =
+  | 'dark'
+  | 'light'
+  | 'acrylic'
+  | 'singularity'
+  | 'midnight'
+  | 'ember'
+  | 'mint'
+  | 'slate'
 export type EffortLevel = 'light' | 'medium' | 'deep'
 
 export interface Settings {
@@ -90,6 +107,12 @@ export interface Settings {
   userName: string
   /** Whether CODEZY is allowed to update its memory file about you. */
   learn: boolean
+  /**
+   * Standing instructions sent with EVERY message — your tone, rules,
+   * languages, things the model must always/never do. Separate from
+   * project context (per-project) and memory (what it learned about you).
+   */
+  instructions?: string
   fontSize: number
   /**
    * How CODEZY handles proposed file edits:
@@ -115,6 +138,29 @@ export interface Settings {
   reduceMotion?: boolean
   /** false = never auto-nudge the model when a reply stops mid-code. */
   autoContinue?: boolean
+  /** UI density: cozy (default) or compact (tighter rows/padding). */
+  density?: 'cozy' | 'compact'
+  /** false = never check GitHub for a newer CODEZY on launch (default true). */
+  autoUpdate?: boolean
+  /**
+   * MCP servers (v3) — external tool servers the agent can call. Each entry
+   * spawns a stdio process (JSON-RPC, newline-delimited) and exposes its
+   * tools to agent mode as mcp__<server>__<tool>.
+   */
+  mcpServers?: McpServerConfig[]
+}
+
+/** One MCP server configuration (stdio transport). */
+export interface McpServerConfig {
+  /** Display + tool-namespacing key — unique per server. */
+  name: string
+  /** Executable to spawn, e.g. "npx" or an absolute path. */
+  command: string
+  args?: string[]
+  /** Extra environment variables for the child process. */
+  env?: Record<string, string>
+  /** Absent/true = enabled; false = configured but not connected. */
+  enabled?: boolean
 }
 
 /** Outcome of one v2 tool execution (reported live to the chat). */

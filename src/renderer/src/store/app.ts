@@ -7,10 +7,10 @@
 
 import { create } from 'zustand'
 import type { ChatMessage, Project, Settings, Session, ConnectionStatus, V2Outcome, EffortLevel, ProviderConfig } from '../../../shared/types'
-import type { ModelEntry } from '../../../shared/api'
+import type { ChatSearchHit, ModelEntry, UpdateCheck } from '../../../shared/api'
 import { COMMANDS, helpText, isEffort, isTheme, parseInput, themeBase, themePalette } from '../../../shared/commands'
 import { PROVIDER_PRESETS } from '../../../shared/providers'
-import { parseEdits, stripEditBlocks } from '../../../shared/edits'
+import { parseEdits, stripEditBlocks, changeCounts } from '../../../shared/edits'
 
 const api = () => window.codezy
 
@@ -34,6 +34,45 @@ const SIDEBAR_OPEN = (() => {
     return true
   }
 })()
+
+// Unsent composer drafts used to die with the window — now they ride along in
+// localStorage, so quitting mid-thought and coming back keeps the text.
+const DRAFTS_KEY = 'codezy.drafts'
+
+// v2.6 — the update pill remembers which version you waved away, so the same
+// release never nags twice (a NEWER release shows up again).
+const UPDATE_DISMISS_KEY = 'codezy.update.dismissed'
+
+function loadUpdateDismissed(): string | null {
+  try {
+    return localStorage.getItem(UPDATE_DISMISS_KEY)
+  } catch {
+    return null
+  }
+}
+
+function loadDrafts(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(DRAFTS_KEY)
+    const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
+    const out: Record<string, string> = {}
+    for (const [k, v] of Object.entries(parsed)) if (typeof v === 'string') out[k] = v
+    return out
+  } catch {
+    return {}
+  }
+}
+
+function persistDrafts(drafts: Record<string, string>): void {
+  try {
+    const trimmed: Record<string, string> = {}
+    for (const [k, v] of Object.entries(drafts)) if (v) trimmed[k] = v
+    if (Object.keys(trimmed).length) localStorage.setItem(DRAFTS_KEY, JSON.stringify(trimmed))
+    else localStorage.removeItem(DRAFTS_KEY)
+  } catch {
+    /* private mode / quota — a draft is not worth an error toast */
+  }
+}
 
 export interface Notice {
   id: string
@@ -73,6 +112,9 @@ export interface AppState {
    *  here", so a background chat's run never fakes a thinking composer */
   streamingIds: string[]
   streamText: string
+  /** buffered stream text per session — a background chat's partial reply is
+   *  kept here so switching back to it shows what arrived so far */
+  streamTexts: Record<string, string>
   notices: Notice[]
   /** one-shot text pushed into the composer (starter cards, edit-and-resend) */
   composerDraft: string | null
@@ -83,17 +125,31 @@ export interface AppState {
   settingsOpen: boolean
   createProjectOpen: boolean
   usageOpen: boolean
+  /** v3.1 batch30 — the background tasks panel + the composer's live count. */
+  tasksOpen: boolean
+  taskCount: number
+  /** /history — the timeline of edit backups (restore any one of them). */
+  historyOpen: boolean
   /** agent write for the cowork editor — drops a cursor where the model works */
   aiWrite: { path: string } | null
   /** auto-continuations burned on this turn (reset by every human message) */
   autoContinuations: number
+  /** v2.6 — GitHub updater: what the last check said (null = not checked). */
+  updateInfo: UpdateCheck | null
+  /** pill flow: idle (hidden/available) → downloading → ready → installing. */
+  updatePhase: 'idle' | 'downloading' | 'ready' | 'installing'
+  updatePercent: number
+  /** version the user dismissed — never nag them about that one again. */
+  updateDismissed: string | null
 
   init(): Promise<void>
   setActive(id: string | null): void
   setFilter(projectId: string | null): void
   newChat(projectId?: string | null): Promise<void>
   removeSession(id: string): Promise<void>
-  send(text: string, files?: { path: string; content: string }[], hidden?: boolean): Promise<void>
+  /** resolves `false` when the text was NOT delivered (steering blocked, save
+   *  failed) — the composer hands the draft back in that case */
+  send(text: string, files?: { path: string; content: string }[], hidden?: boolean): Promise<boolean>
   stop(): Promise<void>
   setComposerDraft(text: string | null): void
   setChatDraft(id: string, text: string): void
@@ -114,8 +170,9 @@ export interface AppState {
   ): Promise<void>
   linkFolder(folder: string): Promise<void>
   unlinkFolder(folder: string): Promise<void>
-  /** Writes a message's proposed edits into the linked folders (with backup). */
-  acceptEdits(messageId: string): Promise<void>
+  /** Writes a message's proposed edits into the linked folders (with backup).
+   *  `only` = the block indices to write (partial accept); omit for all. */
+  acceptEdits(messageId: string, only?: number[], overrides?: Record<number, string>): Promise<void>
   /** Dismisses a message's proposed edits without touching disk. */
   declineEdits(messageId: string): Promise<void>
   updateSettings(patch: Partial<Settings>): Promise<void>
@@ -126,11 +183,29 @@ export interface AppState {
   /** Reverts the last accepted edit batch (the backup written on apply). */
   undoLast(): Promise<void>
   setSettingsOpen(v: boolean): void
+  /** Which section to scroll to when Settings opens (v3.1 — palette jump). */
+  settingsSection: string | null
+  openSettings(section?: string | null): void
   setCreateProjectOpen(v: boolean): void
   setUsageOpen(v: boolean): void
+  setHistoryOpen(v: boolean): void
+  /** batch30 — the panel + the count refresh behind the composer chip. */
+  setTasksOpen(v: boolean): void
+  refreshTasks(): Promise<void>
   /** Ctrl+K command palette. */
   paletteOpen: boolean
   setPaletteOpen(v: boolean): void
+  /** Ctrl+Shift+F — search every chat's messages (v3.1). */
+  searchOpen: boolean
+  setSearchOpen(v: boolean): void
+  /** Debounced query + the hits currently listed in the overlay. */
+  searchQuery: string
+  searchHits: ChatSearchHit[]
+  runSearch(q: string): Promise<void>
+  /** After a hit is picked: jump to that chat and flash the message. */
+  scrollTarget: { sessionId: string; messageId: string } | null
+  clearScrollTarget(): void
+  openSearchHit(hit: ChatSearchHit): void
   /** Ctrl+/ — the keyboard cheat sheet. */
   shortcutsOpen: boolean
   toggleShortcuts(): void
@@ -150,18 +225,34 @@ export interface AppState {
   renameSession(id: string, title: string): Promise<void>
   duplicateSession(id: string): Promise<void>
   exportSession(id: string): Promise<void>
+  /** Deletes a message AND everything after it — truncate from here down. */
+  deleteFrom(messageId: string): Promise<void>
+  /** Archive / unarchive a chat (archived chats hide until "show archived"). */
+  toggleArchive(id: string): Promise<void>
+  /** Every session as one Markdown file, through the save dialog. */
+  exportAll(): Promise<void>
+  /** Whole visible transcript (minus hidden turns) onto the clipboard. */
+  copyTranscript(): Promise<void>
   /** Sidebar Drive button — pick a mirror folder, or open Settings when linked. */
   toggleDrive(): Promise<void>
   addProject(p: { name: string; group: string; rootPath?: string | null }): Promise<void>
   removeProject(id: string): Promise<void>
   reloadProjects(): Promise<void>
+  /** v2.6 — GitHub updater. `silent` = the launch-time check (no toast). */
+  checkForUpdates(silent?: boolean): Promise<void>
+  /** Streams the new setup into temp — the pill shows the percentage. */
+  downloadUpdate(): Promise<void>
+  /** Starts the silent installer and quits; the new version relaunches. */
+  applyUpdate(): Promise<void>
+  /** Hides the pill for THIS version (persisted across launches). */
+  dismissUpdate(): void
 }
 
 const PALETTE_THEMES = new Set<string>(['midnight', 'ember', 'mint', 'slate'])
 
-function applyTheme(theme: Settings['theme'], accent: string): void {
+export function applyTheme(theme: Settings['theme'], accent: string): void {
   // shared config: the terminal palettes (midnight/ember/mint/slate) ride on
-  // the dark surfaces; dark/light/acrylic pick the base mode (accent: midnight)
+  // the dark surfaces; dark/light/acrylic/singularity pick the base mode
   document.documentElement.dataset.theme = themeBase(theme)
   document.documentElement.dataset.palette = themePalette(theme)
   applyAccent(theme, accent)
@@ -169,11 +260,15 @@ function applyTheme(theme: Settings['theme'], accent: string): void {
 
 /** Surface themes (dark/light/acrylic) follow the custom accent — the inline
  *  value outranks the stylesheet's data-palette rule. The palette THEMES own
- *  theirs so the desktop keeps mirroring the terminal's /theme. accent-2 is
- *  derived so focus rings and gradients track whatever the user picked. */
+ *  theirs so the desktop keeps mirroring the terminal's /theme, and singularity
+ *  forces white so the whole surface stays monochrome. accent-2 is derived so
+ *  focus rings and gradients track whatever the user picked. */
 function applyAccent(theme: Settings['theme'], accent: string): void {
   const root = document.documentElement
-  if (PALETTE_THEMES.has(theme)) {
+  // singularity is deliberately colourless — the stylesheet forces --accent to
+  // white (a two-attribute rule that outranks the data-palette block), so the
+  // picked accent is dropped rather than painted over it.
+  if (PALETTE_THEMES.has(theme) || theme === 'singularity') {
     root.style.removeProperty('--accent')
     root.style.removeProperty('--accent-2')
     return
@@ -185,6 +280,11 @@ function applyAccent(theme: Settings['theme'], accent: string): void {
 /** accessibility: one attribute the whole stylesheet hangs off. */
 function applyMotion(reduce: boolean): void {
   document.documentElement.dataset.motion = reduce ? 'off' : 'on'
+}
+
+/** cozy/compact — one attribute drives every row height and padding. */
+function applyDensity(density?: Settings['density']): void {
+  document.documentElement.dataset.density = density === 'compact' ? 'compact' : 'cozy'
 }
 
 function titleFrom(text: string): string {
@@ -199,14 +299,20 @@ function unclosedFence(text: string): boolean {
   return n % 2 === 1
 }
 
-export const useApp = create<AppState>((set, get) => {
-  // set while an /init generation is running — its reply is the context file
-  let pendingInit = false
-  // tool steps of the current agent run — attached to the reply when it finishes
-  let pendingTrace: { name: string; ok: boolean }[] = []
-  let steering = false // a new message cut into a running reply (interject)
+/** Monotonic token for runSearch — a stale response lands in the void. */
+let searchSeq = 0
 
-  // Ollama is started on launch (main process) — booting takes a moment, so
+export const useApp = create<AppState>((set, get) => {
+  // Per-SESSION bookkeeping (keyed by sessionId): two chats can generate at
+  // once, so bare module flags let the wrong reply consume /init, inherit the
+  // other chat's tool steps, or skip auto-continue because of a steering flag
+  // that belonged to a different session.
+  const pendingInit = new Set<string>() // /init sent — its reply IS the context file
+  const pendingTrace = new Map<string, { name: string; ok: boolean; ms?: number; size?: number }[]>() // the run's tool steps
+  const steering = new Set<string>() // a new message cut into a running reply (interject)
+
+  // Ollama comes up on its own (Startup-folder autostart) or on the first
+  // chat that needs it (main process) — either way booting takes a moment, so
   // keep asking until it answers. Re-armed whenever a run errors out, which
   // is usually the engine dying mid-stream.
   let ollamaWatch: number | null = null
@@ -220,6 +326,12 @@ export const useApp = create<AppState>((set, get) => {
           if (st === 'online' && ollamaWatch != null) {
             window.clearInterval(ollamaWatch)
             ollamaWatch = null
+            // the engine answered after init's model fetch came back empty —
+            // refill the picker now, or it stays blank until a settings edit
+            void api()
+              .models.list()
+              .then((list) => set({ models: list }))
+              .catch(() => undefined)
           }
         })
         .catch(() => undefined)
@@ -237,22 +349,46 @@ export const useApp = create<AppState>((set, get) => {
     /** this turn ended — drop it from the per-session bookkeeping */
     const endTurn = () => {
       const ids = get().streamingIds.filter((x) => x !== sid)
-      const patch: Partial<AppState> = { streamingIds: ids, streaming: ids.includes(get().activeId ?? '') }
+      const texts = { ...get().streamTexts }
+      delete texts[sid]
+      const patch: Partial<AppState> = {
+        streamingIds: ids,
+        streaming: ids.includes(get().activeId ?? ''),
+        streamTexts: texts
+      }
       if (mine) Object.assign(patch, { streamText: '', v2Activity: null, v2Ask: null })
       set(patch)
     }
 
     if (payload.type === 'delta') {
-      if (!mine) return // background session — its text lands with the reply
-      set({ streamText: get().streamText + (payload.text as string) })
+      // buffer per session: a background chat's stream accumulates in its own
+      // slot, so switching back shows the text received so far instead of an
+      // empty bubble that restarts from the next delta
+      const next = (get().streamTexts[sid] ?? '') + (payload.text as string)
+      const texts = { ...get().streamTexts, [sid]: next }
+      if (mine) set({ streamText: next, streamTexts: texts })
+      else set({ streamTexts: texts })
       return
     }
 
     if (payload.type === 'v2tool') {
-      if (!mine) return // tool chatter and cursors belong to the visible chat
-      // agent mode: real tool activity → the streaming line shows what runs
       const outcome = (payload.outcome as V2Outcome) ?? 'ok'
-      pendingTrace.push({ name: String(payload.name), ok: outcome === 'ok' })
+      // tool steps belong to the run's own chat — collect them even while it
+      // is backgrounded, so its reply gets the trace when it finishes
+      const tr = pendingTrace.get(sid) ?? []
+      tr.push({
+        name: String(payload.name),
+        ok: outcome === 'ok',
+        // v3.1 — duration + result size ride the event and land in the trace
+        ...(typeof payload.ms === 'number' ? { ms: payload.ms } : {}),
+        ...(typeof payload.size === 'number' ? { size: payload.size } : {})
+      })
+      pendingTrace.set(sid, tr)
+      // batch30 — any run_command step may have started or finished a
+      // background task; refresh the composer chip's count (fire-and-forget,
+      // and from every chat: tasks are global, not per visible session)
+      if (String(payload.name) === 'run_command') void get().refreshTasks()
+      if (!mine) return // live tool chatter and cursors belong to the visible chat
       set({
         v2Activity: {
           iteration: Number(payload.iteration) || 0,
@@ -284,10 +420,10 @@ export const useApp = create<AppState>((set, get) => {
 
     if (payload.type === 'done') {
       const base = payload.message as ChatMessage
-      const wasInit = pendingInit
+      const wasInit = pendingInit.delete(sid) // consume: only THIS chat's /init
       // collapse the run's tool activity onto the finished reply (v1.5 preview)
-      const trace = pendingTrace
-      pendingTrace = []
+      const trace = pendingTrace.get(sid) ?? []
+      pendingTrace.delete(sid)
       const message: ChatMessage = trace.length ? { ...base, trace } : base
       const session = get().sessions.find((s) => s.id === sid) // the run's own chat
       // idempotent: never append the same reply twice
@@ -312,8 +448,7 @@ export const useApp = create<AppState>((set, get) => {
         void get().acceptEdits(message.id)
       }
       // /init: this reply IS the project context → write it into the linked folder
-      if (pendingInit) {
-        pendingInit = false
+      if (wasInit) {
         const body = message.content.replace(/^```[a-z]*\n?|```$/g, '').trim()
         const initSid = session?.id
         if (!initSid || body.length < 40) {
@@ -336,7 +471,7 @@ export const useApp = create<AppState>((set, get) => {
       if (
         mine &&
         !wasInit &&
-        !steering &&
+        !steering.has(sid) &&
         get().settings?.autoContinue !== false &&
         unclosedFence(message.content) &&
         get().autoContinuations < 3
@@ -352,17 +487,17 @@ export const useApp = create<AppState>((set, get) => {
     }
 
     if (payload.type === 'aborted') {
-      pendingInit = false
-      pendingTrace = []
-      // keep whatever the model managed to say — only this chat's own text,
-      // never the visible chat's streamText spilling into another session
-      const partial = mine ? get().streamText : ''
-      const session = mine ? get().sessions.find((s) => s.id === sid) : null
+      pendingInit.delete(sid)
+      pendingTrace.delete(sid)
+      // keep whatever the model managed to say — from ITS OWN buffered stream
+      // (the visible chat's text never spills into another session)
+      const partial = mine ? get().streamText : (get().streamTexts[sid] ?? '')
+      const session = get().sessions.find((s) => s.id === sid)
       if (session && partial) {
         const message: ChatMessage = {
           id: uid(),
           role: 'assistant',
-          content: partial + (steering ? '\n\n*(cut off by your next message)*' : '\n\n*(stopped)*'),
+          content: partial + (steering.has(sid) ? '\n\n*(cut off by your next message)*' : '\n\n*(stopped)*'),
           ts: Date.now()
         }
         const updated: Session = { ...session, messages: [...session.messages, message] }
@@ -374,8 +509,8 @@ export const useApp = create<AppState>((set, get) => {
     }
 
     if (payload.type === 'error') {
-      pendingInit = false
-      pendingTrace = []
+      pendingInit.delete(sid)
+      pendingTrace.delete(sid)
       get().addNotice(String(payload.message), 'error')
       endTurn()
       // a dead backend is usually Ollama going away — refresh the sidebar dot
@@ -514,8 +649,8 @@ export const useApp = create<AppState>((set, get) => {
           s.addNotice(`Theme set to ${args}`)
         } else
           s.addNotice(
-            'Usage: /theme <dark|light|acrylic|midnight|ember|mint|slate>\n' +
-              'dark/light/acrylic = app surfaces · midnight/ember/mint/slate = accent palettes (shared with the terminal)'
+            'Usage: /theme <dark|light|acrylic|singularity|midnight|ember|mint|slate>\n' +
+              'dark/light/acrylic/singularity = app surfaces · midnight/ember/mint/slate = accent palettes (shared with the terminal)'
           )
         break
 
@@ -686,6 +821,11 @@ export const useApp = create<AppState>((set, get) => {
         break
       }
 
+      case '/history':
+        // every backup CODEZY wrote before touching a file — restore any one
+        set({ historyOpen: true })
+        break
+
       case '/export': {
         if (!session) break
         await get().exportSession(session.id)
@@ -798,7 +938,7 @@ export const useApp = create<AppState>((set, get) => {
           `3. Conventions to follow (naming, style, frameworks detected).\n` +
           `4. Gotchas — build/run steps if discoverable, generated folders to ignore.\n\n` +
           `Output ONLY the raw Markdown content: no code fences, no commentary before or after.`
-        pendingInit = true
+        pendingInit.add(session.id) // the done event carries this session's id
         // hidden: the request stays out of the bubbles, the reply shows the context
         await s.send(prompt, undefined, true)
         break
@@ -869,7 +1009,7 @@ export const useApp = create<AppState>((set, get) => {
           const oll = await api().health.ollama()
           rows.push(
             `${ok(oll === 'online')}  endpoint     ${
-              oll === 'online' ? 'Ollama online' : 'Ollama not reachable — start it with: ollama serve'
+              oll === 'online' ? 'Ollama online' : 'Ollama not reachable — next message starts it, or run: ollama serve'
             }`
           )
         } else {
@@ -920,6 +1060,57 @@ export const useApp = create<AppState>((set, get) => {
         break
       }
 
+      case '/archive':
+        if (!session) {
+          s.addNotice('Start a chat first.', 'error')
+          break
+        }
+        await get().toggleArchive(session.id)
+        break
+
+      case '/pin': {
+        if (!session) {
+          s.addNotice('Start a chat first.', 'error')
+          break
+        }
+        const willPin = !session.pinned
+        await get().togglePin(session.id)
+        s.addNotice(willPin ? 'Pinned to the top of the sidebar.' : 'Unpinned.')
+        break
+      }
+
+      case '/transcript':
+        await get().copyTranscript()
+        break
+
+      case '/fontsize': {
+        if (!args) {
+          s.addNotice(`Font size: ${settings.fontSize}px — /fontsize <12..20>`)
+          break
+        }
+        const n = Number.parseInt(args, 10)
+        if (!Number.isFinite(n) || n < 12 || n > 20) {
+          s.addNotice('Usage: /fontsize <12..20>', 'error')
+          break
+        }
+        await patch({ fontSize: n })
+        s.addNotice(`Font size set to ${n}px`)
+        break
+      }
+
+      case '/density': {
+        if (!args) s.addNotice(`Density: ${settings.density ?? 'cozy'} — /density <cozy|compact>`)
+        else if (args === 'cozy' || args === 'compact') {
+          await patch({ density: args })
+          s.addNotice(`Density set to ${args}`)
+        } else s.addNotice('Usage: /density <cozy|compact>', 'error')
+        break
+      }
+
+      case '/update':
+        await s.checkForUpdates(false)
+        break
+
       default:
         s.addNotice(`${name} is scheduled for ${info ? `phase ${info.phase}` : 'a later phase'}.`)
     }
@@ -938,15 +1129,21 @@ export const useApp = create<AppState>((set, get) => {
     streaming: false,
     streamingIds: [],
     streamText: '',
+    streamTexts: {},
     notices: [],
     composerDraft: null,
-    chatDrafts: {},
+    chatDrafts: loadDrafts(),
     v2Activity: null,
     v2Ask: null,
     aiWrite: null,
     autoContinuations: 0,
     settingsOpen: false,
+    settingsSection: null,
     paletteOpen: false,
+    searchOpen: false,
+    searchQuery: '',
+    searchHits: [],
+    scrollTarget: null,
     shortcutsOpen: false,
     ideOpen: false,
     ideFile: null,
@@ -954,6 +1151,13 @@ export const useApp = create<AppState>((set, get) => {
     sidebarOpen: SIDEBAR_OPEN,
     createProjectOpen: false,
     usageOpen: false,
+    tasksOpen: false,
+    taskCount: 0,
+    historyOpen: false,
+    updateInfo: null,
+    updatePhase: 'idle',
+    updatePercent: 0,
+    updateDismissed: loadUpdateDismissed(),
 
     async init() {
       if (initialized) return // StrictMode double-mount guard
@@ -961,6 +1165,7 @@ export const useApp = create<AppState>((set, get) => {
       const settings = await api().settings.get()
       applyTheme(settings.theme, settings.accent)
       applyMotion(settings.reduceMotion ?? false)
+      applyDensity(settings.density)
       const [projects, sessions, models, ollama, drive] = await Promise.all([
         api().projects.list(),
         api().sessions.list(),
@@ -973,15 +1178,32 @@ export const useApp = create<AppState>((set, get) => {
         subscribed = true
       }
       set({ settings, projects, sessions, models, ollama, drive, ready: true, activeId: sessions[0]?.id ?? null })
-      if (ollama !== 'online') armOllamaWatch() // auto-started on launch — poll until it's up
+      if (ollama !== 'online') armOllamaWatch() // autostarted or first-chat-started — poll until it's up
+
+      // v2.6 — quiet GitHub check, once per launch, a few seconds in so it
+      // never competes with startup. Silent: an update shows as the pill,
+      // anything else (offline, rate-limited) stays invisible. `.catch` keeps
+      // a bare/mock bridge from throwing an unhandled rejection later.
+      if (settings.autoUpdate !== false) {
+        window.setTimeout(() => {
+          void get()
+            .checkForUpdates(true)
+            .catch(() => undefined)
+        }, 4000)
+      }
     },
 
     setActive(id) {
       // the composer's thinking/stop state belongs to the chat you're looking
-      // at — switching away from a streaming chat shows a normal composer
+      // at — switching away from a streaming chat shows a normal composer and
+      // resumes its half-finished text from the per-session buffer.
+      // v2Activity is display-only output of the OTHER chat's run (unlike
+      // v2Ask, which main is blocked on) — clearing it stops stale
+      // "reading /other/chat.ts…" lines from showing while this chat is idle.
       set({
         activeId: id,
-        streamText: '',
+        streamText: (id && get().streamTexts[id]) || '',
+        v2Activity: null,
         notices: [],
         streaming: get().streamingIds.includes(id ?? '')
       })
@@ -1004,23 +1226,23 @@ export const useApp = create<AppState>((set, get) => {
 
     async send(text, files, hidden) {
       const trimmed = text.trim()
-      if (!trimmed) return
+      if (!trimmed) return true
       if (!hidden) set({ autoContinuations: 0 }) // a human turn resets the budget
 
       // internal/background sends keep the old rule: never interrupt a reply
-      if (hidden && get().streaming) return
+      if (hidden && get().streaming) return true
 
       // 1. slash command? → runs right away, even while the model is writing
       const parsed = parseInput(trimmed)
       if (parsed.kind === 'command') {
         await runCommand(parsed.name, parsed.args)
-        return
+        return true
       }
 
       // 1b. "#fact" → straight into memory, same shortcut as the terminal TUI
       if (parsed.kind === 'remember') {
         await runCommand('/remember', parsed.fact)
-        return
+        return true
       }
 
       // 2. interject: cut into the running reply — the partial text is kept
@@ -1028,16 +1250,16 @@ export const useApp = create<AppState>((set, get) => {
       //    Only when the VISIBLE chat is the one generating — another chat's
       //    turn never hijacks (or blocks) what you're typing here.
       if (get().streamingIds.includes(get().activeId ?? '')) {
-        steering = true
         const running = get().activeId
+        if (running) steering.add(running)
         if (running) await api().chat.abort(running)
         for (let i = 0; i < 80 && get().streaming; i++) {
           await new Promise((resolve) => setTimeout(resolve, 25))
         }
-        steering = false
+        if (running) steering.delete(running)
         if (get().streaming) {
           get().addNotice('The reply has not stopped yet — try again in a moment.', 'error')
-          return
+          return false // the composer must hand the text back
         }
       }
 
@@ -1064,16 +1286,41 @@ export const useApp = create<AppState>((set, get) => {
         messages: [...session.messages, message],
         title: session.messages.length === 0 ? titleFrom(trimmed) : session.title
       }
-      const saved = await api().sessions.save(updated)
+      let saved: Session
+      try {
+        saved = await api().sessions.save(updated)
+      } catch (e) {
+        // the composer already cleared its input — report and resolve false so
+        // it hands the draft back instead of losing it (disk full, folder gone…)
+        get().addNotice(`Could not save your message: ${e instanceof Error ? e.message : e}`, 'error')
+        return false
+      }
+      const texts = { ...get().streamTexts }
+      delete texts[saved.id]
       set({
         sessions: get().sessions.map((s) => (s.id === saved.id ? saved : s)),
         streaming: true,
         streamingIds: [...new Set([...get().streamingIds, saved.id])],
         streamText: '',
+        streamTexts: texts,
         notices: [],
         usageOpen: false // sending a message closes the in-chat usage window
       })
-      await api().chat.send(saved.id)
+      try {
+        await api().chat.send(saved.id)
+      } catch (e) {
+        // the IPC failed before any stream existed (session vanished, provider
+        // unconfigured) — roll the turn back or "thinking…" never ends
+        const ids = get().streamingIds.filter((x) => x !== saved.id)
+        set({
+          streamingIds: ids,
+          streaming: ids.includes(get().activeId ?? ''),
+          streamText: '',
+          v2Activity: null
+        })
+        get().addNotice(`Could not start the reply: ${e instanceof Error ? e.message : e}`, 'error')
+      }
+      return true
     },
 
     async stop() {
@@ -1086,7 +1333,13 @@ export const useApp = create<AppState>((set, get) => {
       const ids = get().streamingIds
       if (ids.includes(id)) {
         const rest = ids.filter((x) => x !== id)
-        const patch: Partial<AppState> = { streamingIds: rest, streaming: rest.includes(get().activeId ?? '') }
+        const texts = { ...get().streamTexts }
+        delete texts[id]
+        const patch: Partial<AppState> = {
+          streamingIds: rest,
+          streaming: rest.includes(get().activeId ?? ''),
+          streamTexts: texts
+        }
         if (get().activeId === id) Object.assign(patch, { streamText: '', v2Activity: null, v2Ask: null })
         set(patch)
       }
@@ -1096,7 +1349,9 @@ export const useApp = create<AppState>((set, get) => {
       set({ composerDraft: text })
     },
     setChatDraft(id, text) {
-      set({ chatDrafts: { ...get().chatDrafts, [id]: text } })
+      const next = { ...get().chatDrafts, [id]: text }
+      set({ chatDrafts: next })
+      persistDrafts(next) // survives a restart — quitting mid-thought keeps the text
     },
 
     answerV2(allowed) {
@@ -1116,16 +1371,37 @@ export const useApp = create<AppState>((set, get) => {
         return
       }
       // keep everything BEFORE the reply — the request itself stays in history
-      const saved = await api().sessions.save({ ...session, messages: session.messages.slice(0, idx) })
+      let saved: Session
+      try {
+        saved = await api().sessions.save({ ...session, messages: session.messages.slice(0, idx) })
+      } catch (e) {
+        state.addNotice(`Could not regenerate: ${e instanceof Error ? e.message : e}`, 'error')
+        return
+      }
+      const texts = { ...get().streamTexts }
+      delete texts[saved.id]
       set({
         sessions: get().sessions.map((x) => (x.id === saved.id ? saved : x)),
         streaming: true,
         streamingIds: [...new Set([...get().streamingIds, saved.id])],
         streamText: '',
+        streamTexts: texts,
         notices: [],
         usageOpen: false
       })
-      await api().chat.send(saved.id)
+      try {
+        await api().chat.send(saved.id)
+      } catch (e) {
+        // same rollback as send(): a rejected IPC must not strand "thinking…"
+        const ids = get().streamingIds.filter((x) => x !== saved.id)
+        set({
+          streamingIds: ids,
+          streaming: ids.includes(get().activeId ?? ''),
+          streamText: '',
+          v2Activity: null
+        })
+        state.addNotice(`Could not start the reply: ${e instanceof Error ? e.message : e}`, 'error')
+      }
     },
 
     async editFrom(messageId) {
@@ -1206,7 +1482,7 @@ export const useApp = create<AppState>((set, get) => {
       set({ sessions: get().sessions.map((x) => (x.id === saved.id ? saved : x)) })
     },
 
-    async acceptEdits(messageId) {
+    async acceptEdits(messageId, only, overrides) {
       const state = get()
       const session = state.sessions.find((x) => x.id === state.activeId)
       if (!session) {
@@ -1218,8 +1494,8 @@ export const useApp = create<AppState>((set, get) => {
         state.addNotice('That message is no longer in this chat.', 'error')
         return
       }
-      const edits = parseEdits(msg.content)
-      if (!edits.length) {
+      const all = parseEdits(msg.content)
+      if (!all.length) {
         state.addNotice('No file edits found in this message.', 'error')
         return
       }
@@ -1239,6 +1515,45 @@ export const useApp = create<AppState>((set, get) => {
       // re-read: the link above rewrote the session (don't clobber it later)
       const active = get().sessions.find((x) => x.id === session.id) ?? session
 
+      // a partial accept only writes the blocks you ticked, and never the
+      // ones that already landed
+      const already = new Set(active.appliedEdits?.[messageId] ?? [])
+      const requested = (only ?? all.map((_, i) => i)).filter((i) => i >= 0 && i < all.length)
+      const todo = requested.filter((i) => !already.has(i))
+      // v3 per-hunk review: an override carries the composed text that
+      // applies only the TICKED hunks — the write engine still validates the
+      // search block against the real file, so a stale override can never
+      // write something the user didn't see.
+      const edits: typeof all = []
+      let partial = 0
+      for (const i of todo) {
+        const base = all[i]
+        const rep = overrides?.[i]
+        if (rep === undefined) {
+          edits.push(base)
+          continue
+        }
+        if (rep === (base.isNew ? '' : base.search)) continue // every hunk off → nothing to write
+        partial++
+        edits.push({
+          ...base,
+          replace: rep,
+          ...changeCounts(base.isNew ? '' : base.search, rep, base.isNew)
+        })
+      }
+      if (!edits.length) {
+        state.addNotice(
+          todo.length ? 'Nothing selected — every hunk was unticked, so nothing was written.' : 'Those edits were already applied.',
+          'error'
+        )
+        return
+      }
+      if (partial) {
+        state.addNotice(
+          `Writing ${partial} file(s) with only the ticked hunks — the rest stays exactly as it was.`
+        )
+      }
+
       const res = await api().edits.apply(active.id, edits).catch(() => null)
       if (!res) {
         state.addNotice('Accept failed — the write engine did not respond.', 'error')
@@ -1254,16 +1569,28 @@ export const useApp = create<AppState>((set, get) => {
       const lastEdit = edits[edits.length - 1]
       if (lastEdit?.path) set({ aiWrite: { path: lastEdit.path } })
 
-      // mark resolved (hides the bar) only for what actually happened
+      // mark resolved (hides the bar) only when EVERY block has now landed;
+      // otherwise remember which ones did so they are never offered twice
+      const landedPaths = new Set(res.applied.map((a) => a.path))
+      const landed = todo.filter((i) => landedPaths.has(all[i].path))
+      const doneNow = [...new Set([...already, ...landed])].sort((a, b) => a - b)
+      const everything = all.every((_, i) => doneNow.includes(i))
       const saved = await api().sessions.save({
         ...active,
-        resolvedEdits: [...new Set([...(active.resolvedEdits ?? []), messageId])]
+        resolvedEdits: everything
+          ? [...new Set([...(active.resolvedEdits ?? []), messageId])]
+          : active.resolvedEdits,
+        appliedEdits: everything
+          ? active.appliedEdits
+          : { ...(active.appliedEdits ?? {}), [messageId]: doneNow }
       })
       set({ sessions: get().sessions.map((x) => (x.id === saved.id ? saved : x)) })
 
+      const left = all.length - doneNow.length
       const ok =
         `✓ Applied ${res.applied.length} file${res.applied.length === 1 ? '' : 's'}:\n` +
-        res.applied.map((a) => a.path).join('\n')
+        res.applied.map((a) => a.path).join('\n') +
+        (left > 0 ? `\n\n${left} block${left === 1 ? '' : 's'} left to review.` : '')
       if (res.errors.length) {
         state.addNotice(`${ok}\n\nFailed:\n${res.errors.join('\n')}\n\nBackup kept — /undo reverts.`, 'error')
       } else {
@@ -1293,6 +1620,7 @@ export const useApp = create<AppState>((set, get) => {
       const next = { ...current, ...patch }
       if (patch.theme || patch.accent) applyTheme(next.theme, next.accent)
       if (patch.reduceMotion !== undefined) applyMotion(next.reduceMotion ?? false)
+      if (patch.density !== undefined) applyDensity(next.density)
       // Send ONLY the changed keys — main merges them over the settings on
       // disk, so this renderer's copy can never wipe what the TUI saved.
       // May reject if the acrylic theme swap is rebuilding the window.
@@ -1349,6 +1677,9 @@ export const useApp = create<AppState>((set, get) => {
     setSettingsOpen(v) {
       set({ settingsOpen: v })
     },
+    openSettings(section = null) {
+      set({ settingsOpen: true, settingsSection: section })
+    },
 
     setCreateProjectOpen(v) {
       set({ createProjectOpen: v })
@@ -1358,8 +1689,56 @@ export const useApp = create<AppState>((set, get) => {
       set({ usageOpen: v })
     },
 
+    setTasksOpen(v) {
+      set({ tasksOpen: v })
+      if (v) void get().refreshTasks() // fresh rows the moment the panel opens
+    },
+    async refreshTasks() {
+      try {
+        const tasks = await api().tasks.list()
+        set({ taskCount: tasks.filter((t) => t.running).length })
+      } catch {
+        /* bridge missing (tests/mocks) — the count stays as it was */
+      }
+    },
+
+    setHistoryOpen(v) {
+      set({ historyOpen: v })
+    },
+
     setPaletteOpen(v) {
       set({ paletteOpen: v })
+    },
+    setSearchOpen(v) {
+      set({ searchOpen: v })
+    },
+    async runSearch(q) {
+      set({ searchQuery: q })
+      const query = q.trim()
+      if (query.length < 2) {
+        set({ searchHits: [] })
+        return
+      }
+      const token = ++searchSeq
+      try {
+        const hits = await api().sessions.search(query)
+        if (token !== searchSeq) return // a newer query already landed
+        set({ searchHits: hits })
+      } catch {
+        if (token === searchSeq) set({ searchHits: [] })
+      }
+    },
+    clearScrollTarget() {
+      set({ scrollTarget: null })
+    },
+    openSearchHit(hit) {
+      get().setActive(hit.sessionId)
+      set({
+        scrollTarget: { sessionId: hit.sessionId, messageId: hit.messageId },
+        searchOpen: false,
+        searchHits: [],
+        searchQuery: ''
+      })
     },
     toggleShortcuts() {
       set({ shortcutsOpen: !get().shortcutsOpen })
@@ -1428,6 +1807,89 @@ export const useApp = create<AppState>((set, get) => {
       if (path) state.addNotice(`Exported to ${path}`)
     },
 
+    async deleteFrom(messageId) {
+      const state = get()
+      if (state.streaming) {
+        state.addNotice('Wait for the current reply to finish first.', 'error')
+        return
+      }
+      const session = state.sessions.find((x) => x.id === state.activeId)
+      if (!session) return
+      const idx = session.messages.findIndex((m) => m.id === messageId)
+      if (idx < 0) return
+      const kept = session.messages.slice(0, idx)
+      const saved = await api().sessions.save({ ...session, messages: kept })
+      set({ sessions: get().sessions.map((x) => (x.id === saved.id ? saved : x)) })
+      state.addNotice(
+        kept.length
+          ? `Deleted from that message down — ${kept.length} left.`
+          : 'Chat emptied.'
+      )
+    },
+
+    async toggleArchive(id) {
+      const session = get().sessions.find((x) => x.id === id)
+      if (!session) return
+      const archived = !session.archived
+      const saved = await api().sessions.save({ ...session, archived })
+      set({ sessions: get().sessions.map((x) => (x.id === id ? saved : x)) })
+      if (archived && get().activeId === id) set({ activeId: null })
+      get().addNotice(archived ? 'Chat archived — it hides until you show archived chats.' : 'Chat restored.')
+    },
+
+    async exportAll() {
+      const state = get()
+      const list = state.sessions
+      if (!list.length) {
+        state.addNotice('No chats to export yet.', 'error')
+        return
+      }
+      const body = list
+        .map((session) =>
+          [
+            `# ${session.title}${session.archived ? ' *(archived)*' : ''}`,
+            '',
+            ...session.messages
+              .filter((m) => !m.hidden)
+              .map(
+                (m) =>
+                  `**${m.role === 'user' ? 'You' : 'CODEZY'}** · ${new Date(m.ts).toLocaleString()}\n\n${m.content}\n`
+              )
+          ].join('\n')
+        )
+        .join('\n\n---\n\n')
+      const md = [`# CODEZY — ${list.length} chats`, '', body].join('\n')
+      const path = await api().dialog.saveText(
+        `codezy-chats-${new Date().toISOString().slice(0, 10)}.md`,
+        md
+      )
+      if (path) state.addNotice(`Exported ${list.length} chat${list.length === 1 ? '' : 's'} to ${path}`)
+    },
+
+    async copyTranscript() {
+      const state = get()
+      const session = state.sessions.find((x) => x.id === state.activeId)
+      if (!session || !session.messages.length) {
+        state.addNotice('Nothing to copy — this chat is empty.', 'error')
+        return
+      }
+      const text = session.messages
+        .filter((m) => !m.hidden)
+        .map(
+          (m) =>
+            `## ${m.role === 'user' ? 'You' : 'CODEZY'} · ${new Date(m.ts).toLocaleString()}\n\n${
+              m.role === 'user' ? m.content : stripEditBlocks(m.content).trim() || m.content
+            }`
+        )
+        .join('\n\n')
+      try {
+        await navigator.clipboard.writeText(text)
+        state.addNotice(`Copied the whole transcript (${text.length} chars).`)
+      } catch {
+        state.addNotice('Clipboard copy failed — click the window first, then try again.', 'error')
+      }
+    },
+
     async toggleDrive() {
       const state = get()
       if (state.drive.enabled) {
@@ -1464,6 +1926,56 @@ export const useApp = create<AppState>((set, get) => {
 
     async reloadProjects() {
       set({ projects: await api().projects.list() })
+    },
+
+    // -- v2.6 in-app update -------------------------------------------------
+    // One quiet flow: check on launch (silent), pill when GitHub is ahead,
+    // download with a percentage, then restart in place. Any failure lands
+    // back at `idle` — an update feature must never wedge the UI.
+    async checkForUpdates(silent = false) {
+      const info = await api().update.check()
+      set({ updateInfo: info, updatePhase: 'idle', updatePercent: 0 })
+      if (silent) return // launch check: the pill is the whole message
+      if (!info.ok) get().addNotice(`Update check failed: ${info.error ?? 'offline'}`, 'error')
+      else if (!info.available) get().addNotice(`You're on the latest version (${info.current}).`)
+      else get().addNotice(`CODEZY ${info.release?.version} is available — the pill in the top bar installs it.`)
+    },
+
+    async downloadUpdate() {
+      const info = get().updateInfo
+      if (!info?.available || !info.release) return
+      set({ updatePhase: 'downloading', updatePercent: 0 })
+      const off = api().update.onProgress((p) => set({ updatePercent: p.percent }))
+      try {
+        const res = await api().update.download()
+        if ('error' in res) throw new Error(res.error)
+        set({ updatePhase: 'ready' })
+      } catch (e) {
+        get().addNotice(`Update download failed: ${e instanceof Error ? e.message : String(e)}`, 'error')
+        set({ updatePhase: 'idle', updatePercent: 0 })
+      } finally {
+        off()
+      }
+    },
+
+    async applyUpdate() {
+      set({ updatePhase: 'installing' })
+      const res = await api().update.apply()
+      if (!res.ok) {
+        get().addNotice(`Couldn't start the update: ${res.error ?? 'unknown error'}`, 'error')
+        set({ updatePhase: 'ready' })
+      }
+      // success = the app is quitting; the installer relaunches the new version
+    },
+
+    dismissUpdate() {
+      const v = get().updateInfo?.release?.version ?? null
+      try {
+        if (v) localStorage.setItem(UPDATE_DISMISS_KEY, v)
+      } catch {
+        /* private mode — dismissal just won't survive the restart */
+      }
+      set({ updateDismissed: v, updateInfo: null, updatePhase: 'idle' })
     }
   }
 })

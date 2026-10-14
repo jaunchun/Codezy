@@ -15,10 +15,20 @@ const GENERAL: Row[] = [
 
 const CHAT: Row[] = [
   ['Find in chat', 'Ctrl+F'],
+  ['Search every chat', 'Ctrl+Shift+F'],
   ['Accept edits (preview open)', 'Ctrl+Enter'],
   ['Close popups / find', 'Esc'],
   ['Rename, pin, export, delete', 'Right-click a chat'],
   ['Copy, quote, branch, edit', 'Hover a message']
+]
+
+const COWORK: Row[] = [
+  ['Open / close cowork', 'Ctrl+E'],
+  ['Go to file (quick open)', 'Ctrl+P'],
+  ['Find in the open file', 'Ctrl+F'],
+  ['Save', 'Ctrl+S'],
+  ['New file / new folder', 'Toolbar'],
+  ['Reveal, rename, delete, copy path', 'Right-click a row']
 ]
 
 function Section({ title, rows }: { title: string; rows: Row[] }) {
@@ -82,6 +92,7 @@ export default function Shortcuts() {
           <Section title="General" rows={GENERAL} />
           <Section title="In a chat" rows={CHAT} />
           <Section title="Composer" rows={composer} />
+          <Section title="Cowork editor" rows={COWORK} />
         </div>
         <div className="kbd-hint">ctrl + / toggles this sheet</div>
       </div>

@@ -198,12 +198,16 @@ function resolveTarget(edit, folders) {
 }
 
 /**
- * Applies edits inside `folders`. Partial success is allowed; a backup is
- * only created when something was actually written.
+ * Applies edits inside `folders`. Two phases: everything is resolved and
+ * computed first (no disk changes), then the safety copy is written, and only
+ * then do the file writes happen — if the backup cannot be written, NOTHING
+ * is applied. Non-UTF-8 files are refused outright: matching them through a
+ * lossy decode would destroy every invalid byte in the file.
  * @param folders {string[]}
  * @param edits {{path:string, search:string, replace:string, isNew:boolean}[]}
  * @param backupDir {string} — e.g. ~/.codezy/backups/terminal
  */
+let lastBackupTs = 0
 export function applyEdits(folders, edits, backupDir) {
   const applied = []
   const errors = []
@@ -211,8 +215,8 @@ export function applyEdits(folders, edits, backupDir) {
   if (!folders.length) return { applied, errors: ['Link a folder first (/link <dir>).'], backupId: null }
   if (!edits.length) return { applied, errors: ['Nothing to apply.'], backupId: null }
 
-  const backups = []
-
+  // pass 1: resolve, validate, compute — nothing on disk yet
+  const plan = []
   for (const edit of edits) {
     try {
       const { target, error } = resolveTarget(edit, folders)
@@ -235,7 +239,14 @@ export function applyEdits(folders, edits, backupDir) {
           errors.push(`${edit.path}: not found.`)
           continue
         }
-        const current = fs.readFileSync(target, 'utf8')
+        const rawBuf = fs.readFileSync(target)
+        const current = rawBuf.toString('utf8')
+        // a NUL or any byte that doesn't survive a UTF-8 round-trip means
+        // binary or legacy-encoded content — refuse rather than corrupt it
+        if (current.includes('\0') || !Buffer.from(current, 'utf8').equals(rawBuf)) {
+          errors.push(`${edit.path}: not UTF-8 text (binary or legacy encoding) — refusing to edit to avoid corruption.`)
+          continue
+        }
         const hay = current.replace(/\r\n/g, '\n')
         const needle = edit.search.replace(/\r\n/g, '\n')
         const idx = hay.indexOf(needle)
@@ -249,29 +260,70 @@ export function applyEdits(folders, edits, backupDir) {
         }
         prev = current
         next = hay.slice(0, idx) + edit.replace.replace(/\r\n/g, '\n') + hay.slice(idx + needle.length)
+        // matching runs on the LF-normalized copy — restore the file's
+        // dominant ending so a one-line edit doesn't rewrite every line
+        const crlf = (current.match(/\r\n/g) ?? []).length
+        const lf = (current.match(/\n/g) ?? []).length - crlf
+        if (crlf > lf) next = next.replace(/\n/g, '\r\n')
       }
 
-      fs.mkdirSync(path.dirname(target), { recursive: true })
-      fs.writeFileSync(target, next, 'utf8')
-      backups.push({ path: target, prev })
-      applied.push({ path: target, isNew: edit.isNew })
+      plan.push({ target, next, prev, isNew: edit.isNew, editPath: edit.path })
     } catch (e) {
       errors.push(`${edit.path}: ${e.message}`)
     }
   }
 
+  if (!plan.length) return { applied, errors, backupId: null }
+
+  // pass 2: the safety copy — BEFORE the first write
+  const entries = plan.map((w) => ({ path: w.target, prev: w.prev }))
   let backupId = null
-  if (backups.length) {
+  try {
+    fs.mkdirSync(backupDir, { recursive: true })
+    const now = Date.now()
+    lastBackupTs = now > lastBackupTs ? now : lastBackupTs + 1 // never collide
+    backupId = String(lastBackupTs)
+    fs.writeFileSync(
+      path.join(backupDir, `${backupId}.json`),
+      JSON.stringify({ ts: Date.now(), entries }, null, 2),
+      'utf8'
+    )
+  } catch (e) {
+    return {
+      applied,
+      errors: [...errors, `safety backup could not be written (${e.message}) — no files were changed.`],
+      backupId: null
+    }
+  }
+
+  // pass 3: the writes
+  const written = []
+  for (const w of plan) {
     try {
-      fs.mkdirSync(backupDir, { recursive: true })
-      backupId = String(Date.now())
-      fs.writeFileSync(
-        path.join(backupDir, `${backupId}.json`),
-        JSON.stringify({ ts: Date.now(), entries: backups }, null, 2),
-        'utf8'
-      )
+      fs.mkdirSync(path.dirname(w.target), { recursive: true })
+      fs.writeFileSync(w.target, w.next, 'utf8')
+      applied.push({ path: w.target, isNew: w.isNew })
+      written.push({ path: w.target, prev: w.prev })
+    } catch (e) {
+      errors.push(`${w.editPath}: ${e.message}`)
+    }
+  }
+
+  // shrink the backup to what actually changed; drop it entirely when
+  // nothing landed (nothing to undo then)
+  const backupFile = path.join(backupDir, `${backupId}.json`)
+  if (!written.length) {
+    try {
+      fs.rmSync(backupFile, { force: true })
     } catch {
-      backupId = null // writes succeeded; only the safety copy failed
+      /* ignore */
+    }
+    backupId = null
+  } else if (written.length !== entries.length) {
+    try {
+      fs.writeFileSync(backupFile, JSON.stringify({ ts: Date.now(), entries: written }, null, 2), 'utf8')
+    } catch {
+      /* keep the pre-write superset — undo still restores everything */
     }
   }
 
@@ -297,15 +349,43 @@ export function undoLast(backupDir) {
   }
 
   let restored = 0
+  // one entry per edited region — the same file can appear twice in one
+  // batch, and the EARLIEST entry holds the true pre-edit content
+  const seen = new Set()
+  const deduped = []
   for (const e of entries) {
+    if (seen.has(e.path)) continue
+    seen.add(e.path)
+    deduped.push(e)
+  }
+  const failed = []
+  for (const e of deduped) {
     try {
       if (e.prev === null) fs.rmSync(e.path, { force: true })
       else fs.writeFileSync(e.path, e.prev, 'utf8')
       restored++
     } catch {
-      /* file vanished or locked — keep going */
+      // file vanished or locked — keep it so a retry works
+      failed.push(e)
     }
   }
-  fs.rmSync(path.join(backupDir, latest), { force: true })
+
+  const latestPath = path.join(backupDir, latest)
+  if (failed.length) {
+    // a partial undo must stay undoable: keep ONLY the files that could not
+    // be restored, so /undo again retries exactly those
+    try {
+      fs.writeFileSync(latestPath, JSON.stringify({ ts: Date.now(), entries: failed }, null, 2), 'utf8')
+    } catch {
+      /* the original backup stays as-is — still complete */
+    }
+    return {
+      restored,
+      message:
+        `Reverted ${restored} file${restored === 1 ? '' : 's'}; ` +
+        `${failed.length} could not be written (locked or missing) — run /undo again to retry.`
+    }
+  }
+  fs.rmSync(latestPath, { force: true })
   return { restored, message: `Reverted ${restored} file${restored === 1 ? '' : 's'}.` }
 }

@@ -25,7 +25,7 @@ export const COMMANDS: CommandInfo[] = [
   { name: '/mode', args: '<plan|build|auto>', description: 'plan = advice only · build = you accept edits · auto = apply them', phase: 1 },
   {
     name: '/theme',
-    args: '<dark|light|acrylic|midnight|ember|mint|slate>',
+    args: '<dark|light|acrylic|singularity|midnight|ember|mint|slate>',
     description: 'Switch the app theme or terminal accent palette',
     phase: 1
   },
@@ -46,10 +46,17 @@ export const COMMANDS: CommandInfo[] = [
   { name: '/cost', args: '', description: 'Tokens this chat used — transcript estimate, last reply', phase: 1 },
   { name: '/skill', args: '<name|off>', description: 'Activate a skill (prompt playbook)', phase: 2 },
   { name: '/undo', args: '', description: 'Revert the last file edit CODEZY made', phase: 1 },
+  { name: '/history', args: '', description: 'Every backup taken before an edit — restore any point', phase: 1 },
   { name: '/review', args: '', description: 'Review the pending edits like a code reviewer', phase: 2 },
   { name: '/search', args: '<query>', description: 'Search the internet (DuckDuckGo, no key)', phase: 3 },
   { name: '/add-dir', args: '<folder>', description: 'Link another folder to this chat', phase: 1 },
-  { name: '/init', args: '', description: 'Generate a context file for the linked project folder', phase: 3 }
+  { name: '/init', args: '', description: 'Generate a context file for the linked project folder', phase: 3 },
+  { name: '/archive', args: '', description: 'Archive this chat — hides it until "show archived" is on', phase: 1 },
+  { name: '/pin', args: '', description: 'Pin / unpin this chat to the top of the sidebar', phase: 1 },
+  { name: '/transcript', args: '', description: 'Copy the whole conversation to the clipboard', phase: 1 },
+  { name: '/fontsize', args: '[12..20]', description: 'Show or set the interface font size', phase: 1 },
+  { name: '/density', args: '[cozy|compact]', description: 'Row/padding density of the interface', phase: 1 },
+  { name: '/update', args: '', description: 'Check GitHub for a newer CODEZY — installs in place', phase: 1 }
 ]
 
 export type ParsedCommand =
@@ -90,6 +97,7 @@ export const THEME_NAMES: ThemeName[] = [
   'dark',
   'light',
   'acrylic',
+  'singularity',
   'midnight',
   'ember',
   'mint',
@@ -101,11 +109,14 @@ export function isTheme(v: string): v is ThemeName {
 }
 
 /** Which surface a theme paints: terminal palettes ride on the dark base. */
-export function themeBase(v: ThemeName): 'dark' | 'light' | 'acrylic' {
-  return v === 'light' ? 'light' : v === 'acrylic' ? 'acrylic' : 'dark'
+export function themeBase(v: ThemeName): 'dark' | 'light' | 'acrylic' | 'singularity' {
+  if (v === 'light') return 'light'
+  if (v === 'acrylic') return 'acrylic'
+  if (v === 'singularity') return 'singularity'
+  return 'dark'
 }
 
-/** Which accent palette a theme uses — dark/light/acrylic keep midnight blue. */
+/** Which accent palette a theme uses — the surfaces keep midnight blue. */
 export function themePalette(v: ThemeName): 'midnight' | 'ember' | 'mint' | 'slate' {
   return v === 'ember' || v === 'mint' || v === 'slate' ? v : 'midnight'
 }

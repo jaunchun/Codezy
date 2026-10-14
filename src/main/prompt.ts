@@ -9,9 +9,17 @@ import path from 'path'
 import type { ChatMessage, Project, Settings, Session } from '../shared/types'
 import { readMemory, p } from './store'
 import { contextSizeFor } from './ollama'
+import { v2Active } from './v2'
 
 const BASE_INSTRUCTIONS = `You are CODEZY, a coding assistant running locally on the user's machine.
 Be direct and practical. Prefer small, correct code over long explanations.
+
+How to answer:
+- Lead with the answer or the change itself; keep prose short and skimmable.
+- Put code in fenced blocks that carry the language tag.
+- Never invent file contents, APIs, flags or line numbers you have not been
+  shown here — if you need to see a file first, say exactly that.
+- When a request is ambiguous, ask ONE short question instead of guessing.
 
 You CAN create and change files on this machine — never reply that you cannot
 save or write files. When the user asks to create, save, or change a file, say a
@@ -29,6 +37,11 @@ Rules for edits:
   contains the COMPLETE file — never truncated, no "..." placeholders.
 - Existing file: ===SEARCH is copied verbatim from the file (indentation
   included) and must match exactly one place.
+- Keep each SEARCH/REPLACE block to one contiguous hunk of ~40 lines or less,
+  anchored on unique text. Several small blocks beat one giant rewrite; for an
+  existing file, never send the whole file back as SEARCH.
+- If you cannot reproduce the exact text, widen the SEARCH by a line or two of
+  surrounding context rather than shrinking it or paraphrasing.
 - Paths: when this prompt has a "## Linked folders" section, use paths relative
   to that folder and follow its file tree. If no folder is linked yet, use the
   plain filename the user expects (for example clicker_game.py) — accepting the
@@ -99,13 +112,60 @@ export function fileTree(dir: string, maxEntries = 120): string {
   return out.join('\n')
 }
 
-/** Attachment content is hidden in the UI chip — expanded only for the model. */
-function expandMessage(msg: ChatMessage): ChatMessage {
+/** Attachment content is hidden in the UI chip — expanded only for the model.
+ *  Images become real vision input (data URLs on `.images`); text files keep
+ *  the inline-block expansion. */
+const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'])
+const IMAGE_MIME: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp'
+}
+/** Beyond this a base64 payload would dwarf the whole conversation. */
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
+/** Reads an image attachment as a data URL. Order: an existing data URL in
+ *  the attachment content (paste path), then the real file on disk, then raw
+ *  base64 in the content. Returns null when unreadable or over the cap. */
+function imageDataUrl(f: { path: string; content: string }): string | null {
+  const mime = IMAGE_MIME[path.extname(f.path || '').toLowerCase()] ?? 'image/png'
+  if (/^data:image\//i.test(f.content)) return f.content
+  try {
+    const st = fs.statSync(f.path)
+    if (st.size > MAX_IMAGE_BYTES) return null
+    return `data:${mime};base64,${fs.readFileSync(f.path).toString('base64')}`
+  } catch {
+    /* not on disk — fall through to raw base64 in content */
+  }
+  if (f.content && f.content.length > 64 && /^[A-Za-z0-9+/=\s]+$/.test(f.content)) {
+    return `data:${mime};base64,${f.content.replace(/\s+/g, '')}`
+  }
+  return null
+}
+
+/** Exported for batch24 tests. */
+export function expandMessage(msg: ChatMessage): ChatMessage {
   if (!msg.files?.length) return msg
-  const blocks = msg.files
-    .map((f) => `Attached file: ${f.path}\n\`\`\`\n${f.content}\n\`\`\``)
-    .join('\n\n')
-  return { ...msg, content: `${msg.content}\n\n${blocks}` }
+  const images: string[] = []
+  const blocks = msg.files.map((f) => {
+    if (!IMAGE_EXT.has(path.extname(f.path || '').toLowerCase())) {
+      return `Attached file: ${f.path}\n\`\`\`\n${f.content}\n\`\`\``
+    }
+    const data = imageDataUrl(f)
+    if (data) {
+      images.push(data)
+      return `Attached image: ${f.path} (you can see the picture itself — it is attached as vision input)`
+    }
+    return `Attached image: ${f.path} (could not be embedded — file missing or larger than ${MAX_IMAGE_BYTES / 1024 / 1024} MB; do not assume its contents)`
+  })
+  return {
+    ...msg,
+    content: `${msg.content}\n\n${blocks.join('\n\n')}`,
+    ...(images.length ? { images: [...(msg.images ?? []), ...images] } : {})
+  }
 }
 
 function safeRead(file: string): string {
@@ -114,6 +174,16 @@ function safeRead(file: string): string {
   } catch {
     return ''
   }
+}
+
+/** Per-project standing orders: <folder>/.codezy/instructions.md (v3.1).
+ *  CODEZY.md stays the /init-generated context file; this one is the file the
+ *  project owner keeps in the repo — always/never rules, how to run and test.
+ *  Read-only, capped, and only ever read from that exact path inside folder. */
+export function readProjectInstructions(folder: string, max = 4000): string {
+  const t = safeRead(path.join(folder, '.codezy', 'instructions.md')).trim()
+  if (!t) return ''
+  return t.length > max ? `${t.slice(0, max)}\n…[project instructions truncated]` : t
 }
 
 /**
@@ -131,17 +201,36 @@ export function buildMessages(session: Session, project: Project | null, setting
   }
 
   // 0b. agent mode (v2) — name the tools so the model never claims it has none
-  if (settings.v2) {
+  // (same check as the router: no linked folder = plain chat, no tools)
+  if (v2Active(session, settings)) {
     sections.push(
       '## Tools\n' +
-        'You run with tools: list_dir, read_file, write_file, grep_search, run_command, web_search, todo_write.\n' +
+        'You run with tools: list_dir, read_file, write_file, edit_file, glob, grep_search, run_command, web_search, web_fetch, todo_write.\n' +
         '- web_search queries the internet (DuckDuckGo) and returns titles, URLs and snippets. USE IT for ' +
         'anything current or web-related (releases, prices, docs, news, downloads) and whenever you are unsure. ' +
         'You DO have internet access through it — never claim you cannot search the web or lack that tool.\n' +
+        '- web_fetch opens one URL and returns its text (HTML stripped to prose). After web_search, fetch the ' +
+        '1–3 most promising links instead of answering from the snippets alone.\n' +
         '- todo_write saves your checklist (pending / in_progress / done). For any task with more than two steps, ' +
         'save the plan first and update it as you finish each step — the user watches the list.\n' +
-        '- write_file and run_command always ask the user for approval first; say in one short line what you are about to do.'
+        '- write_file, edit_file and run_command always ask the user for approval first; say in one short line what you are about to do.\n' +
+        'How to work with the tools:\n' +
+        '- Explore BEFORE you act: list_dir or grep_search to find the right file, read_file to see it. Never ' +
+        'rewrite a file you have not read in this conversation, and never guess its contents.\n' +
+        '- In this mode file changes go through write_file — do NOT output ===FILE / ===SEARCH edit blocks; ' +
+        'those belong to the no-tools mode.\n' +
+        '- Keep going until the task is actually done — real tasks take several tool steps; do not stop after ' +
+        'one. When the tools make it possible, verify your work: re-read the changed file, grep for the symbol ' +
+        'you touched, or run the project\'s tests/build with run_command when it has one.\n' +
+        '- Finish with a short summary: what you changed and how you verified it. If something failed, say what ' +
+        'you tried and the error you got.'
     )
+  }
+
+  // 0c. standing instructions from the user — always close to the top, so a
+  // small model cannot lose them under a long transcript
+  if (settings.instructions?.trim()) {
+    sections.push(`## Instructions from you\n${settings.instructions.trim()}`)
   }
 
   // 1. what CODEZY learned about the user
@@ -170,14 +259,21 @@ export function buildMessages(session: Session, project: Project | null, setting
 
   // 6. linked folders — a shallow file tree so the model knows what exists,
   //    plus the CODEZY.md context file that /init generates for the project
+  //    and .codezy/instructions.md — standing orders the project owner keeps
+  //    in the repo (v3.1; capped so a huge file can never drown the tree)
   if (session.linkedFolders?.length) {
     const blocks = session.linkedFolders.map((folder) => {
       const tree = fileTree(folder)
       const ctx = safeRead(path.join(folder, 'CODEZY.md')).trim()
+      const proj = readProjectInstructions(folder)
       const head = `Folder: ${folder}\n${tree || '(empty or unreadable)'}`
-      return ctx ? `${head}\n\nCODEZY.md (project context):\n${ctx}` : head
+      let block = ctx ? `${head}\n\nCODEZY.md (project context):\n${ctx}` : head
+      if (proj) {
+        block += `\n\n.codezy/instructions.md (project instructions — standing rules for THIS project, follow them):\n${proj}`
+      }
+      return block
     })
-    sections.push(`## Linked folders\n${blocks.join('\n\n')}`.slice(0, 12000))
+    sections.push(`## Linked folders\n${blocks.join('\n\n')}`.slice(0, 16000))
   }
 
   const system: ChatMessage = {

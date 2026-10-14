@@ -119,6 +119,35 @@ export function contextSizeFor(_effort: 'light' | 'medium' | 'deep'): number {
  * `messages` must already be fully built by prompt.ts (system prompt,
  * memory, project context, skill, goal, history) — this file only ships it.
  */
+/**
+ * Ollama wire shape — `images` carries RAW base64 (Ollama infers the format
+ * from the bytes), so the data-URL prefix from expandMessage is stripped.
+ */
+export function ollamaWireMessages(messages: ChatMessage[]): { role: string; content: string; images?: string[] }[] {
+  return messages.map((m) => {
+    const images = m.images?.length ? m.images.map((u) => u.replace(/^data:[^;,]+;base64,/, '')) : undefined
+    return { role: m.role, content: m.content, ...(images?.length ? { images } : {}) }
+  })
+}
+
+/**
+ * OpenAI wire shape — images become content parts: the text stays first and
+ * each image is a `image_url` part with the full data URL. Plain messages
+ * keep the simple string form (some endpoints reject parts without images).
+ */
+export function openaiWireMessages(messages: ChatMessage[]): { role: string; content: unknown }[] {
+  return messages.map((m) => {
+    if (!m.images?.length) return { role: m.role, content: m.content }
+    return {
+      role: m.role,
+      content: [
+        { type: 'text', text: m.content },
+        ...m.images.map((url) => ({ type: 'image_url', image_url: { url } }))
+      ]
+    }
+  })
+}
+
 export async function streamChat(target: ChatTarget, messages: ChatMessage[], opts: StreamOptions): Promise<StreamStats> {
   const base = target.baseUrl.replace(/\/$/, '')
   return target.kind === 'ollama'
@@ -128,91 +157,128 @@ export async function streamChat(target: ChatTarget, messages: ChatMessage[], op
 
 async function streamOllama(base: string, target: ChatTarget, messages: ChatMessage[], opts: StreamOptions): Promise<StreamStats> {
   const preset = EFFORT[target.effort]
-  const stats: StreamStats = {}
-  const res = await fetch(`${base}/api/chat`, {
-    method: 'POST',
+  let deltas = 0
+  const counted: StreamOptions = {
     signal: opts.signal,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: target.model,
-      messages: messages.map((m) => ({ role: m.role, content: m.content })),
-      stream: true,
-      options: {
-        temperature: preset.temperature,
-        num_ctx: preset.num_ctx,
-        num_predict: preset.num_predict
-      }
-    })
-  })
-  if (!res.ok || !res.body) throw new Error(`Ollama error ${res.status}: ${await res.text().catch(() => '')}`)
+    onDelta: (t) => {
+      deltas++
+      opts.onDelta(t)
+    }
+  }
 
-  // Ollama streams newline-delimited JSON: {"message":{"content":"…"},"done":false}
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() ?? '' // keep the possibly-incomplete last line
-    for (const line of lines) {
-      if (!line.trim()) continue
+  const once = async (): Promise<StreamStats> => {
+    const stats: StreamStats = {}
+    const res = await fetch(`${base}/api/chat`, {
+      method: 'POST',
+      signal: opts.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: target.model,
+        messages: ollamaWireMessages(messages),
+        stream: true,
+        options: {
+          temperature: preset.temperature,
+          num_ctx: preset.num_ctx,
+          num_predict: preset.num_predict
+        }
+      })
+    })
+    if (!res.ok || !res.body) throw new Error(`Ollama error ${res.status}: ${await res.text().catch(() => '')}`)
+
+    // Ollama streams newline-delimited JSON: {"message":{"content":"…"},"done":false}
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    const processLine = (line: string): void => {
+      if (!line.trim()) return
       try {
         const json = JSON.parse(line)
-        if (json.message?.content) opts.onDelta(json.message.content)
+        if (json.message?.content) counted.onDelta(json.message.content)
         if (json.done) {
           stats.promptTokens = json.prompt_eval_count
           stats.completionTokens = json.eval_count
         }
         if (json.error) throw new Error(json.error)
       } catch (e) {
-        if (e instanceof SyntaxError) continue // partial line, wait for more
+        if (e instanceof SyntaxError) return // partial line, wait for more
         throw e
       }
     }
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? '' // keep the possibly-incomplete last line
+      for (const line of lines) processLine(line)
+    }
+    // flush: a server that closes without a trailing newline would otherwise
+    // lose its final line — often {"done":true,…} carrying the token counts
+    buffer += decoder.decode()
+    if (buffer.trim()) processLine(buffer)
+    return stats
   }
-  return stats
+
+  try {
+    return await once()
+  } catch (e) {
+    // Ollama often resets the connection while the model is still loading —
+    // one quiet retry, but ONLY when nothing has streamed yet (never duplicate
+    // visible text) and the failure wasn't an HTTP error or an abort.
+    const httpErr = e instanceof Error && /^Ollama error \d/.test(e.message)
+    const aborted = opts.signal.aborted || (e instanceof Error && e.name === 'AbortError')
+    if (deltas > 0 || httpErr || aborted) throw e
+    await new Promise((r) => setTimeout(r, 700))
+    return once()
+  }
 }
 
 async function streamOpenAI(base: string, target: ChatTarget, messages: ChatMessage[], opts: StreamOptions): Promise<StreamStats> {
   const preset = EFFORT[target.effort]
-  const stats: StreamStats = {}
-  const res = await fetch(`${base}/chat/completions`, {
-    method: 'POST',
+  let deltas = 0
+  const counted: StreamOptions = {
     signal: opts.signal,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(target.apiKey ? { Authorization: `Bearer ${target.apiKey}` } : {})
-    },
-    body: JSON.stringify({
-      model: target.model,
-      messages: messages.map((m) => ({ role: m.role, content: m.content })),
-      stream: true,
-      temperature: preset.temperature
-    })
-  })
-  if (!res.ok || !res.body) throw new Error(`API error ${res.status}: ${await res.text().catch(() => '')}`)
+    onDelta: (t) => {
+      deltas++
+      opts.onDelta(t)
+    }
+  }
 
-  // SSE format: lines like `data: {...}` terminated by `data: [DONE]`
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() ?? ''
-    for (const line of lines) {
+  const once = async (): Promise<StreamStats> => {
+    const stats: StreamStats = {}
+    const res = await fetch(`${base}/chat/completions`, {
+      method: 'POST',
+      signal: opts.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(target.apiKey ? { Authorization: `Bearer ${target.apiKey}` } : {})
+      },
+      body: JSON.stringify({
+        model: target.model,
+        messages: openaiWireMessages(messages),
+        stream: true,
+        temperature: preset.temperature
+      })
+    })
+    if (!res.ok || !res.body) throw new Error(`API error ${res.status}: ${await res.text().catch(() => '')}`)
+
+    // SSE format: lines like `data: {...}` terminated by `data: [DONE]`
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let finished = false
+    const processLine = (line: string): void => {
       const trimmed = line.trim()
-      if (!trimmed.startsWith('data:')) continue
+      if (!trimmed.startsWith('data:')) return
       const payload = trimmed.slice(5).trim()
-      if (payload === '[DONE]') return stats
+      if (payload === '[DONE]') {
+        finished = true
+        return
+      }
       try {
         const json = JSON.parse(payload)
         const delta: string | undefined = json.choices?.[0]?.delta?.content
-        if (delta) opts.onDelta(delta)
+        if (delta) counted.onDelta(delta)
         if (json.usage) {
           stats.promptTokens = json.usage.prompt_tokens
           stats.completionTokens = json.usage.completion_tokens
@@ -221,6 +287,31 @@ async function streamOpenAI(base: string, target: ChatTarget, messages: ChatMess
         /* partial JSON across chunks — wait for more data */
       }
     }
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) {
+        processLine(line)
+        if (finished) return stats
+      }
+    }
+    // flush: a final unterminated `data:` line (usage stats) is not lost
+    buffer += decoder.decode()
+    if (buffer.trim()) processLine(buffer)
+    return stats
   }
-  return stats
+
+  try {
+    return await once()
+  } catch (e) {
+    // transient connect/reset before any visible output → one quiet retry
+    const httpErr = e instanceof Error && /^API error \d/.test(e.message)
+    const aborted = opts.signal.aborted || (e instanceof Error && e.name === 'AbortError')
+    if (deltas > 0 || httpErr || aborted) throw e
+    await new Promise((r) => setTimeout(r, 700))
+    return once()
+  }
 }

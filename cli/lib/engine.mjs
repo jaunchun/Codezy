@@ -157,20 +157,41 @@ function openaiMessage(m) {
 async function streamOpenAI(base, target, messages, opts) {
   const preset = EFFORTS[target.effort] ?? EFFORTS.medium
   const stats = {}
-  const res = await fetch(`${base}/chat/completions`, {
-    method: 'POST',
-    signal: opts.signal,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(target.apiKey ? { Authorization: `Bearer ${target.apiKey}` } : {})
-    },
-    body: JSON.stringify({
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(target.apiKey ? { Authorization: `Bearer ${target.apiKey}` } : {})
+  }
+  const body = (withUsage) =>
+    JSON.stringify({
       model: target.model,
       messages: messages.map(openaiMessage),
       stream: true,
+      // without stream_options most providers never send the final `usage`
+      // chunk — token counts in the footer would stay empty everywhere
+      ...(withUsage ? { stream_options: { include_usage: true } } : {}),
       temperature: preset.temperature
     })
+  let res = await fetch(`${base}/chat/completions`, {
+    method: 'POST',
+    signal: opts.signal,
+    headers,
+    body: body(true)
   })
+  if (!res.ok && res.status === 400) {
+    const errText = await res.text().catch(() => '')
+    if (errText.includes('stream_options')) {
+      // exotic OpenAI-compatible gateway that rejects the field — retry once
+      // without it (usage stays empty there, everything else keeps working)
+      res = await fetch(`${base}/chat/completions`, {
+        method: 'POST',
+        signal: opts.signal,
+        headers,
+        body: body(false)
+      })
+    } else {
+      throw new Error(`API error 400: ${errText}`)
+    }
+  }
   if (!res.ok || !res.body) throw new Error(`API error ${res.status}: ${await res.text().catch(() => '')}`)
 
   const reader = res.body.getReader()

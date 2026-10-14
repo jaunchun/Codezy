@@ -97,54 +97,151 @@ export interface IdeNode {
   path: string
   dir?: boolean
   children?: IdeNode[]
+  /** Present on a marker row (never clickable): how many entries were left
+   *  out right here because a cap was hit — 0 = the reason is in the name
+   *  (deeper folders). Without this the truncation used to be silent, which
+   *  read as "CODEZY lost my folders". */
+  more?: number
 }
 
-const MAX_TREE_FILES = 4000
+export interface IdeTreeOptions {
+  /** Include the ignored folders (dist/venv/.vscode/…). .git and node_modules
+   *  stay out either way — either would bury the tree in tens of thousands of
+   *  rows and neither is something you cowork on. */
+  showIgnored?: boolean
+  /** File rows for the whole tree (default MAX_TREE_FILES). */
+  maxFiles?: number
+  /** File rows per folder, so one monster folder can't starve the rest. */
+  maxFilesPerDir?: number
+}
+
+const MAX_TREE_FILES = 12_000 // file rows for the whole tree
+const MAX_FILES_PER_DIR = 3_000 // so one monster folder can't starve the rest
+const MAX_TREE_DIRS = 30_000 // directory nodes (a pathologic tree still stops)
+const MAX_TREE_DEPTH = 40 // deeper than this: the folder shows, its contents don't
 const MAX_IDE_READ = 1_000_000 // characters the editor will open
 
-/** Structured tree of the linked folders (skips node_modules/.git/…). */
-export function ideTree(roots: string[]): IdeNode[] {
+/**
+ * Structured tree of the linked folders.
+ *
+ * Rules that exist because they were once broken (v2.5.0: a user saw 2 of
+ * their 10 folders): a full FILE budget may only ever cost you files, never
+ * directories — every folder the user made is walked and shown, and whatever
+ * is left out says so with a marker row. Directories are emitted before
+ * files, so a truncation never reads as "this folder is empty".
+ */
+export function ideTree(roots: string[], opts?: IdeTreeOptions): IdeNode[] {
   const out: IdeNode[] = []
-  let count = 0
-  const walk = (dir: string): IdeNode[] => {
+  const skip = opts?.showIgnored ? new Set(['.git', 'node_modules']) : SKIP_DIRS
+  const fileCap = Math.max(0, opts?.maxFiles ?? MAX_TREE_FILES)
+  const dirFileCap = Math.max(1, opts?.maxFilesPerDir ?? MAX_FILES_PER_DIR)
+  let files = 0
+  let dirs = 0
+
+  const walk = (dir: string, depth: number): IdeNode[] => {
     const nodes: IdeNode[] = []
     let entries: fs.Dirent[]
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true })
     } catch {
-      return nodes
+      return nodes // unreadable (permission, vanished) — siblings still show
     }
     entries.sort((a, b) =>
       a.isDirectory() === b.isDirectory() ? a.name.localeCompare(b.name) : a.isDirectory() ? -1 : 1
     )
+
+    // 1. directories — ALWAYS, whatever the file counters say
     for (const e of entries) {
-      if (count > MAX_TREE_FILES) break
+      if (!e.isDirectory() || skip.has(e.name) || dirs >= MAX_TREE_DIRS) continue
       const full = path.join(dir, e.name)
-      if (e.isDirectory()) {
-        if (SKIP_DIRS.has(e.name)) continue
-        nodes.push({ name: e.name, path: full, dir: true, children: walk(full) })
-      } else if (e.isFile()) {
-        count++
-        nodes.push({ name: e.name, path: full, dir: false })
+      dirs++
+      const children =
+        depth >= MAX_TREE_DEPTH
+          ? [{ name: '… deeper folders are hidden', path: `${full}\u0000deep`, dir: false, more: 0 } as IdeNode]
+          : walk(full, depth + 1)
+      nodes.push({ name: e.name, path: full, dir: true, children })
+    }
+
+    // 2. files — capped, per directory and for the whole tree
+    let leftOut = 0 // skipped for the whole-tree budget
+    let leftOutDir = 0 // skipped for this folder's own budget
+    let perDirCut = false // which cap caused leftOutDir (labels the marker)
+    for (const e of entries) {
+      if (!e.isFile()) continue
+      if (files >= fileCap) {
+        leftOut++
+        continue
       }
+      if (leftOutDir >= dirFileCap) {
+        leftOutDir++
+        perDirCut = true
+        continue
+      }
+      files++
+      leftOutDir++
+      nodes.push({ name: e.name, path: path.join(dir, e.name), dir: false })
+    }
+    if (leftOutDir) {
+      nodes.push({
+        name: perDirCut
+          ? `… ${leftOutDir} more file${leftOutDir === 1 ? '' : 's'} in this folder`
+          : `… ${leftOutDir} more file${leftOutDir === 1 ? '' : 's'} (tree cap reached)`,
+        path: `${dir}\u0000more`,
+        dir: false,
+        more: leftOutDir
+      })
+    }
+    if (leftOut) {
+      nodes.push({
+        name: `… ${leftOut} more file${leftOut === 1 ? '' : 's'} (tree cap reached)`,
+        path: `${dir}\u0000more-tree`,
+        dir: false,
+        more: leftOut
+      })
     }
     return nodes
   }
+
   for (const r of roots) {
     const root = path.resolve(r)
-    out.push({ name: path.basename(root) || root, path: root, dir: true, children: walk(root) })
+    out.push({ name: path.basename(root) || root, path: root, dir: true, children: walk(root, 1) })
   }
   return out
 }
 
+export interface IdeReadResult {
+  content: string
+  /** The file is over MAX_IDE_READ and its tail was cut off — the buffer in
+   *  the editor is NOT the whole file, so saving it back would destroy the
+   *  rest. The editor opens such files read-only. */
+  truncated: boolean
+}
+
 /** Full read for the editor — confined to the linked folders, big cap. */
-export function ideRead(roots: string[], target: string): string | null {
+export function ideRead(roots: string[], target: string): IdeReadResult | null {
   if (!roots.some((r) => inside(r, target))) return null
   try {
     const text = fs.readFileSync(target, 'utf8')
-    return text.length > MAX_IDE_READ ? text.slice(0, MAX_IDE_READ) : text
+    if (text.length > MAX_IDE_READ) return { content: text.slice(0, MAX_IDE_READ), truncated: true }
+    return { content: text, truncated: false }
   } catch {
     return null
+  }
+}
+
+/**
+ * True when writing `content` over `target` would destroy data: the file on
+ * disk is bigger than the editor's read cap, so `content` can only be a
+ * truncated buffer of it. (A full rewrite from scratch is always smaller than
+ * the file it replaces — anything that fits the cap while the file doesn't is
+ * by definition a truncated view.)
+ */
+export function ideSaveWouldTruncate(target: string, content: string): boolean {
+  try {
+    if (!fs.existsSync(target)) return false
+    return fs.statSync(target).size > MAX_IDE_READ && content.length <= MAX_IDE_READ
+  } catch {
+    return false
   }
 }
 
@@ -172,6 +269,38 @@ export function ideCreate(roots: string[], target: string, dir: boolean): string
     return target
   } catch {
     return null
+  }
+}
+
+/**
+ * Rename/move a cowork file. Both ends must sit inside the linked folders,
+ * the source must exist and the destination must not (a silent overwrite of
+ * another file is exactly what a rename must never do).
+ */
+export function ideRename(roots: string[], from: string, to: string): string | null {
+  if (!roots.some((r) => inside(r, from)) || !roots.some((r) => inside(r, to))) return null
+  try {
+    if (!fs.existsSync(from) || fs.existsSync(to)) return null
+    fs.renameSync(from, to)
+    return to
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Delete a cowork file. Files only — removing a directory tree from a
+ * one-click row is never what the user meant — and never a linked root.
+ */
+export function ideDelete(roots: string[], target: string): boolean {
+  if (!roots.some((r) => inside(r, target))) return false
+  if (roots.some((r) => path.resolve(r) === path.resolve(target))) return false
+  try {
+    if (!fs.existsSync(target) || !fs.statSync(target).isFile()) return false
+    fs.unlinkSync(target)
+    return true
+  } catch {
+    return false
   }
 }
 

@@ -163,6 +163,7 @@ let notes = [] // /btw background notes (always in context, never a turn)
 let activeSkill = null
 let pendingEdits = null // skipped proposal — /review, /apply work on it
 let pendingFrom = null // the assistant message that proposed pendingEdits
+let rawPrompt = false // the edit-proposal y/n loop owns the input line
 const resolvedMsgs = new Set() // proposals already accepted/declined
 let effort = isEffort(settings.effort) ? settings.effort : 'medium'
 let mode = ['plan', 'build', 'auto'].includes(settings.mode) ? settings.mode : 'build'
@@ -186,7 +187,22 @@ let pasting = false // inside a bracketed-paste block
   const model = val('model')
   if (model) settings.activeModel = model
   const dir = val('dir') ?? val('root')
-  if (dir) linkFolder = path.resolve(dir)
+  if (dir) {
+    const resolved = path.resolve(dir.startsWith('~') ? path.join(os.homedir(), dir.slice(1)) : dir)
+    let isDir = false
+    try {
+      isDir = fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()
+    } catch {
+      isDir = false
+    }
+    if (!isDir) {
+      // a typo must never become linkFolder: edits mkdir their parents, so a
+      // wrong --dir would silently CREATE a stray tree on the first write
+      process.stderr.write(`codezy: --dir "${dir}" is not a folder\n`)
+      process.exit(2)
+    }
+    linkFolder = resolved
+  }
 }
 
 // -- styling -----------------------------------------------------------------
@@ -247,20 +263,21 @@ function band(content, cursorCol) {
   )
 }
 
-// Block wordmark for the start screen; the plain name is the fallback on
+// Block wordmark for the start screen — flush rectangular glyphs that share
+// one grid, so every row lines up like a marquee sign (the old per-row
+// indents made the letters look sheared). The plain name is the fallback on
 // narrow or short terminals where the banner would wrap or scroll away.
 const GLYPHS = {
-  C: [' ██████', '██     ', '██     ', '██     ', '██     ', ' ██████'],
-  O: [' █████ ', '██   ██', '██   ██', '██   ██', '██   ██', ' █████ '],
-  D: ['███████', '██   ██', '██   ██', '██   ██', '██   ██', '███████'],
-  E: ['██████', '██    ', '████  ', '██    ', '██    ', '██████'],
-  Z: ['███████', '     ██', '    ██ ', '   ██  ', '  ██   ', '███████'],
-  Y: ['██  ██', '██  ██', ' ████ ', '  ██  ', '  ██  ', '  ██  ']
+  C: ['███████', '██     ', '██     ', '██     ', '██     ', '███████'],
+  O: ['███████', '██   ██', '██   ██', '██   ██', '██   ██', '███████'],
+  D: ['██████ ', '██   ██', '██   ██', '██   ██', '██   ██', '██████ '],
+  E: ['███████', '██     ', '██████ ', '██     ', '██     ', '███████'],
+  Z: ['███████', '    ██ ', '   ██  ', '  ██   ', ' ██    ', '███████'],
+  Y: ['██   ██', ' ██ ██ ', '  ███  ', '   ██  ', '   ██  ', '   ██  ']
 }
 const WORDMARK = Array.from({ length: 6 }, (_, r) =>
   'CODEZY'.split('').map((ch) => GLYPHS[ch][r]).join(' ')
 )
-const TITLE = cols() >= 50 && (process.stdout.rows || 24) >= 20 ? WORDMARK.join('\n') : 'CODEZY'
 
 /** Bordered card, opencode-style. rows: [{ text, color }] — text is padded
  *  before coloring so the box edge never drifts. */
@@ -389,9 +406,21 @@ function buildSystem(includeFolders = true) {
     } catch {
       // no CODEZY.md — /init makes one
     }
+    // .codezy/instructions.md — same standing orders file the desktop app
+    // loads (v3.1); capped so a huge file can't drown the tree
+    let proj = ''
+    try {
+      proj = fs.readFileSync(path.join(linkFolder, '.codezy', 'instructions.md'), 'utf8').trim()
+      if (proj.length > 4000) proj = `${proj.slice(0, 4000)}\n…[project instructions truncated]`
+    } catch {
+      // no project instructions file — the repo simply doesn't have one
+    }
     const head = `Folder: ${linkFolder}\n${tree || '(empty or unreadable)'}`
-    const block = ctx ? `## Linked folders\n${head}\n\nCODEZY.md (project context):\n${ctx}` : `## Linked folders\n${head}`
-    sections.push(block.slice(0, 12000))
+    let block = ctx ? `## Linked folders\n${head}\n\nCODEZY.md (project context):\n${ctx}` : `## Linked folders\n${head}`
+    if (proj) {
+      block += `\n\n.codezy/instructions.md (project instructions — standing rules for THIS project, follow them):\n${proj}`
+    }
+    sections.push(block.slice(0, 16000))
   }
   return sections.join('\n\n')
 }
@@ -559,6 +588,12 @@ async function maybeCompact(system, force = false) {
  * is drawn but nothing is added to history. Esc (TTY) aborts and keeps the
  * partial reply.
  */
+/** The window/tab title doubles as a status lamp — even unfocused, the tab
+ *  shows whether the session is thinking, done, stopped or broken. */
+function setTitle(t) {
+  process.stdout.write(`\x1b]0;${t}\x07`)
+}
+
 async function streamReply(userText, opts = {}) {
   const ephemeral = !!opts.ephemeral
   const system = opts.system ?? buildSystem()
@@ -596,7 +631,9 @@ async function streamReply(userText, opts = {}) {
       }
       chat.push({ k: 'text', t: '' })
       thinking = true
+      thinkT0 = Date.now()
       animStart()
+      setTitle('CODEZY · thinking…')
       render()
     } else if (!TTY && !ephemeral) {
       process.stdout.write('\n')
@@ -633,6 +670,7 @@ async function streamReply(userText, opts = {}) {
     if (live) {
       thinking = false
       animStop()
+      setTitle('CODEZY ✓ done')
       chat[chat.length - 1].t = stripEditBlocks(final)
       chat.push({ k: 'raw', t: `${meta}\n` })
       render()
@@ -650,6 +688,7 @@ async function streamReply(userText, opts = {}) {
     const wasAborted = !!abortCtl?.signal.aborted
     thinking = false
     animStop()
+    if (TTY) setTitle(wasAborted ? 'CODEZY · ready' : 'CODEZY ✗ error')
 
     if (wasAborted) {
       if (pushedUser) {
@@ -669,11 +708,18 @@ async function streamReply(userText, opts = {}) {
 
     if (pushedUser) history.pop()
     const drawn = live && chat.length && chat[chat.length - 1].k === 'text'
+    // a dead endpoint deserves a next step, not just "fetch failed"
+    const hint = /fetch failed|econnrefused|econnreset|socket|getaddrinfo|network/i.test(
+      String(e?.message ?? e)
+    )
+      ? `${DIM}  can't reach the model — is ollama running? /model picks another provider${RESET}\n`
+      : ''
     if (drawn) {
-      chat.push({ k: 'raw', t: `${RED}  error: ${e.message}${RESET}\n` })
+      chat.push({ k: 'raw', t: `${RED}  error: ${e.message}${RESET}\n${hint}` })
       render()
     } else {
       console.log(`${RED}  error: ${e.message}${RESET}`)
+      if (hint) console.log(hint)
     }
     throw e
   } finally {
@@ -683,14 +729,19 @@ async function streamReply(userText, opts = {}) {
 
 // -- welcome -----------------------------------------------------------------
 
-// window/tab title (Windows Terminal + modern conhost honor this)
-process.stdout.write('\x1b]0;CODEZY terminal\x07')
+// window/tab title (Windows Terminal + modern conhost honor this) — the
+// lamp gets re-written by setTitle() while replies stream
+setTitle('CODEZY terminal')
 
-// -- opencode-style start screen -------------------------------------------
-// Block wordmark, a shaded two-row input box under it, keybind hints, a yellow
-// tip, and a footer spread across the corners. SPLASH_ABOVE / SPLASH_BELOW are
-// the exact line counts around the live box row — SPLASH_TOP and SPLASH_UP are
-// derived from them, so growing the banner can never desync the prompt cursor.
+// -- start screen: identity on top, composer pinned to the bottom ------------
+// Wordmark + tagline + chat meta form an identity block at the top; a rule,
+// the hints row, the live input band and the footer stack UP from the last
+// screen row, so the composer always sits where your hands are and the gap
+// lives BETWEEN the two blocks instead of inside the input. The splash is
+// rebuilt on resize, and boot wipes the screen first — no stale rows (or
+// junk a crashed run left behind) can survive underneath it. SPLASH_ABOVE /
+// SPLASH_BELOW are the exact rows around the live band — SPLASH_TOP and
+// SPLASH_UP derive from them, so the prompt cursor hops always agree.
 
 let pkg = { version: '0.0.0' }
 try {
@@ -703,51 +754,88 @@ const home = os.homedir()
 const cwd = process.cwd()
 const shortCwd = cwd.startsWith(home) ? '~' + cwd.slice(home.length) : cwd
 
-const hints = `${DIM}↑ history   ctrl+p commands${RESET}`
-const tipFull = `${YELLOW}●${RESET} Tip ${DIM}Run /sessions to load one of your app chats as context${RESET}`
-const tipShort = `${YELLOW}●${RESET} Tip ${DIM}/sessions loads a saved chat${RESET}`
-const tip =
-  plain(tipFull).length < cols() - 1 ? tipFull : plain(tipShort).length < cols() - 1 ? tipShort : ''
+const TAGLINE = `${YELLOW}●${RESET}${DIM} singularity — one local mind for your codebase${RESET}`
 
-// corner-spread footer: cwd left, version right — long paths get cut from the
-// left so the line can never wrap and desync the splash line counts
-const footRoom = Math.max(cols() - pkg.version.length - 3, 8)
-const footCwd = shortCwd.length > footRoom ? `…${shortCwd.slice(-(footRoom - 1))}` : shortCwd
-const footer =
-  `${footCwd}${' '.repeat(Math.max(cols() - footCwd.length - pkg.version.length - 1, 2))}` +
-  `${DIM}${pkg.version}${RESET}`
+let SPLASH_ABOVE = []
+let SPLASH_BELOW = []
+let SPLASH_TOP = 0
+let SPLASH_UP = 1
+let palRows = 0 // palette rows last drawn above the splash band (0 = none)
 
-// row 2 of the input box: chat · model · effort [· branch], trimmed so it never wraps
-const metaBranch = gitBranch(linkFolder || process.cwd())
-const metaFull = metaBranch
-  ? `chat · ${settings.activeModel} · ${effort} · ${metaBranch}`
-  : `chat · ${settings.activeModel} · ${effort}`
-let metaPlain = metaFull
-if (metaPlain.length > cols() - 4) metaPlain = `chat · ${settings.activeModel} · ${effort}`
-if (metaPlain.length > cols() - 4) metaPlain = `chat · ${settings.activeModel}`
-if (metaPlain.length > cols() - 4) metaPlain = `chat · ${settings.activeModel.slice(0, Math.max(cols() - 12, 6))}…`
-const metaContent =
-  metaPlain === metaFull
-    ? metaBranch
-      ? `${ACCENT}chat${RESET} · ${settings.activeModel} · ${YELLOW}${effort}${RESET} · ${ACCENT}${metaBranch}${RESET}`
-      : `${ACCENT}chat${RESET} · ${settings.activeModel} · ${YELLOW}${effort}${RESET}`
-    : `${ACCENT}chat${RESET}${metaPlain.slice(4)}`
+/** Rebuild the splash rows for the CURRENT terminal size — every string is
+ *  trimmed/centered here, so a resize re-fits the whole layout from scratch. */
+function buildSplash() {
+  const rowH = process.stdout.rows || 24
+  const wm =
+    cols() >= 50 && rowH >= 20
+      ? WORDMARK.map((r) => center(`${ACCENT}${r.trimEnd()}${RESET}`))
+      : [center(`${ACCENT}CODEZY${RESET}`)]
 
-const SPLASH_ABOVE = ['', ...TITLE.split('\n'), '', '']
-const SPLASH_BELOW = [
-  band(metaContent, 0),
-  '',
-  `${' '.repeat(Math.max(cols() - plain(hints).length - 1, 0))}${hints}`,
-  '',
-  tip ? center(tip) : '',
-  '',
-  footer,
-  ''
-]
+  // chat meta — trimmed so the line can never wrap and desync the splash rows
+  const metaBranch = gitBranch(linkFolder || process.cwd())
+  const metaFull = metaBranch
+    ? `chat · ${settings.activeModel} · ${effort} · ${metaBranch}`
+    : `chat · ${settings.activeModel} · ${effort}`
+  let metaPlain = metaFull
+  if (metaPlain.length > cols() - 4) metaPlain = `chat · ${settings.activeModel} · ${effort}`
+  if (metaPlain.length > cols() - 4) metaPlain = `chat · ${settings.activeModel}`
+  if (metaPlain.length > cols() - 4) metaPlain = `chat · ${settings.activeModel.slice(0, Math.max(cols() - 12, 6))}…`
+  const metaContent =
+    metaPlain === metaFull
+      ? metaBranch
+        ? `${ACCENT}chat${RESET} · ${settings.activeModel} · ${YELLOW}${effort}${RESET} · ${ACCENT}${metaBranch}${RESET}`
+        : `${ACCENT}chat${RESET} · ${settings.activeModel} · ${YELLOW}${effort}${RESET}`
+      : `${ACCENT}chat${RESET}${metaPlain.slice(4)}`
 
-for (const l of SPLASH_ABOVE) console.log(l ? center(`${ACCENT}${l.trimEnd()}${RESET}`) : '')
-console.log(band(PLACEHOLDER, plain(PLACEHOLDER).length + 3))
-for (const l of SPLASH_BELOW) console.log(l)
+  const tipFull = `${YELLOW}●${RESET} Tip ${DIM}Run /sessions to load one of your app chats as context${RESET}`
+  const tipShort = `${YELLOW}●${RESET} Tip ${DIM}/sessions loads a saved chat${RESET}`
+  const tip =
+    plain(tipFull).length < cols() - 1 ? tipFull : plain(tipShort).length < cols() - 1 ? tipShort : ''
+
+  const hintsRow = center(`${DIM}↑ history   type / for commands   ctrl+p all${RESET}`)
+  const rule = `${DIM}${'─'.repeat(cols())}${RESET}`
+
+  // corner-spread footer: cwd left, version right — long paths get cut from
+  // the left so the line can never wrap and desync the splash line counts
+  const footRoom = Math.max(cols() - pkg.version.length - 3, 8)
+  const footCwd = shortCwd.length > footRoom ? `…${shortCwd.slice(-(footRoom - 1))}` : shortCwd
+  const footer =
+    `${footCwd}${' '.repeat(Math.max(cols() - footCwd.length - pkg.version.length - 1, 2))}` +
+    `${DIM}${pkg.version}${RESET}`
+
+  // identity block, then the breathing gap (the tip floats in its middle),
+  // then the spacer above the rule that tops off the composer stack
+  const above = ['', ...wm, '', TAGLINE, '']
+  if (metaContent) above.push(metaContent)
+  // 6 = band + SPLASH_BELOW + the cursor's own row; the tip is a row of its own
+  const pad = Math.max(rowH - 1 - above.length - 6 - (tip ? 1 : 0), 1)
+  const padA = tip ? Math.floor(pad / 2) : pad
+  for (let i = 0; i < padA; i++) above.push('')
+  if (tip) above.push(center(tip))
+  for (let i = 0; i < pad - padA; i++) above.push('')
+  above.push('') // spacer directly above the rule
+
+  SPLASH_ABOVE = above
+  SPLASH_BELOW = [rule, hintsRow, '', footer]
+  SPLASH_TOP = above.length
+  SPLASH_UP = SPLASH_BELOW.length + 1
+}
+
+/** Full splash repaint (boot + resize): wipe, rows, band, hop to the band. */
+function drawSplash(buf = rawBuf, col0 = rawCol, boot = false) {
+  buildSplash()
+  palRows = 0
+  const col = buf ? col0 + 3 : plain(PLACEHOLDER).length + 3
+  let out = `${TTY ? '\x1b[2J\x1b[H' : ''}` // wipe first — no stale rows survive
+  for (const l of SPLASH_ABOVE) out += `${l}\r\n`
+  out += `${band(buf || PLACEHOLDER, col)}\r\n`
+  for (const l of SPLASH_BELOW) out += `${l}\r\n`
+  out += `\x1b[${SPLASH_UP}A\x1b[${col}G`
+  process.stdout.write(out)
+  if (!boot && overlay) drawBox() // re-place an open palette above the band
+}
+
+drawSplash('', 0, true) // boot — buffer and overlay don't exist yet
 
 // -- input -------------------------------------------------------------------
 // Real terminals get an opencode-style input box: a shaded band with an accent
@@ -824,12 +912,10 @@ function wordBack(from) {
   return i
 }
 
-// The preview box printed under the wordmark IS the first input: it sits
-// SPLASH_UP lines above the cursor (meta row, hints, tip, footer, blanks).
-// After the first submit the splash ends and prompts appear at the cursor.
-// Both counts come from the printed line arrays, so they always agree.
-const SPLASH_UP = SPLASH_BELOW.length + 1
-const SPLASH_TOP = SPLASH_ABOVE.length
+// The band printed by drawSplash() IS the first input: it sits SPLASH_UP
+// lines above the cursor (hints, footer, blanks). After the first submit the
+// splash ends and prompts appear at the cursor. Both counts come from the
+// printed line arrays in buildSplash(), so they always agree.
 let splashLive = TTY
 
 // -- chat screen renderer ----------------------------------------------------
@@ -841,6 +927,7 @@ let splashLive = TTY
 let chat = [] // [{ k: 'msg' | 'text' | 'raw', t }]
 let chatMode = false
 let thinking = false
+let thinkT0 = 0 // when the current reply started — drives the live progress row
 let animFrame = 0
 let animTimer = null
 let renderTimer = null
@@ -848,18 +935,19 @@ let renderTimer = null
 // The overlay shares the input line as its filter box: whatever you type is
 // the query, ↑/↓ move the selection, enter/tab accept, esc closes. In chat
 // mode render() stacks its rows directly above the input band; on the splash
-// screen they replace the meta/hint/tip/footer block below the box, which is
-// restored when the overlay closes. The drawBox invariant: the cursor always
-// ends on the box's input row (palette or not).
+// screen drawBox() stacks them above the band too, rewriting the exact rows
+// they cover (identity block / tip) so closing restores them. The drawBox
+// invariant: the cursor always ends on the box's input row (palette or not).
 
 let overlay = null // { kind: 'cmds' | 'hist' | 'files', sel, top }
-let palShown = false // a palette is currently printed below the splash box
 let footRowsShown = 1 // overlay + input rows last drawn (chat mode)
 let filesCache = null // { dir, list } of the linked folder's files
 
 const atToken = () => {
   const m = rawBuf.match(/(?:^|\s)@([\w./\\-]*)$/)
-  return m ? { text: m[1], start: rawBuf.length - m[0].length + (m[0][0] === ' ' ? 1 : 0) } : null
+  // the match starts with the separator (space, newline, tab…) — skip it, or
+  // accepting the file would delete that character along with "@token"
+  return m ? { text: m[1], start: rawBuf.length - m[0].length + (m[0][0] === '@' ? 0 : 1) } : null
 }
 
 /** Linked folder's files (bounded walk, cached until the folder changes). */
@@ -974,6 +1062,27 @@ function autoOverlay() {
   const tok = atToken()
   if (tok && !overlay) overlay = { kind: 'files', sel: 0, top: 0 }
   else if (!tok && overlay?.kind === 'files') overlay = null
+}
+
+/** A leading / opens the command palette by itself — command help as you type,
+ *  exactly like @paths open the file list. Manually opened palettes (ctrl+p,
+ *  ctrl+r) and pickers/prompts are never touched; only what this opened closes
+ *  itself again when the slash leaves the line. */
+function autoCmds() {
+  if (rawPrompt) return // the edit-proposal y/n loop owns the input line
+  if (overlay && overlay.kind !== 'cmds') return // pickers/history/files are hands-off
+  const on = rawBuf.startsWith('/') && !rawBuf.includes('\n')
+  if (on && !overlay) overlay = { kind: 'cmds', sel: 0, top: 0, auto: true }
+  else if (!on && overlay?.kind === 'cmds' && overlay.auto) overlay = null
+}
+
+/** The typed line IS a command (its first token exactly matches one, or no row
+ *  matches it at all) — Enter runs it as typed; a partial like `/eff` accepts
+ *  the highlighted row into the input instead. */
+function typedCommand() {
+  const tok = (rawBuf.trim().split(/\s+/)[0] ?? '').toLowerCase()
+  if (tok.startsWith('/') && COMMANDS.some((x) => x.c === tok)) return true
+  return tok.startsWith('/') && !overlayItems().length // unknown command — let it run
 }
 
 function openOverlay(kind) {
@@ -1157,8 +1266,16 @@ function render() {
   if (!TTY || !chatMode) return
   const rows = Math.max(process.stdout.rows || 24, 8)
   const all = chatRows()
-  if (thinking)
-    all.push(`${ACCENT}${['✳', '✸', '✶', '✻'][animFrame % 4]}${RESET} ${DIM}thinking… · esc to stop${RESET}`)
+  if (thinking) {
+    const glyph = ['✳', '✸', '✶', '✻'][animFrame % 4]
+    // before the first token: say you're waiting; after it: count the reply
+    // live (chars + elapsed) so a quiet model never looks frozen
+    const got = chat[chat.length - 1]?.k === 'text' ? plain(chat[chat.length - 1].t).length : 0
+    const stage = got
+      ? `${got} chars · ${Math.max(Math.round((Date.now() - thinkT0) / 1000), 1)}s · esc to stop`
+      : `thinking… · esc to stop`
+    all.push(`${ACCENT}${glyph}${RESET} ${DIM}${stage}${RESET}`)
+  }
   const inp = inputRows()
   const over = overlayRows()
   const keep = Math.max(rows - 1 - inp.rows.length - over.length, 1) // content · overlay · input · status
@@ -1203,14 +1320,21 @@ function animStop() {
 
 function drawBox() {
   autoOverlay() // an @path token opens (or closes) the file list by itself
+  autoCmds() // a leading / opens (or closes) the command palette by itself
   if (chatMode) {
     const inp = inputRows()
     const over = overlayRows()
     const total = over.length + inp.rows.length
     if (total !== footRowsShown) return render() // footprint changed
-    // rewrite only the overlay + input rows: up to the first one, clear, redraw
+    // rewrite only the overlay + input rows: hop to the block's FIRST row.
+    // The cursor parks on inp.row — NOT on the block's last row — so the
+    // distance up is over + inp.row; using total - 1 would start the redraw
+    // (rows - 1 - inp.row) rows too high whenever the caret isn't on the last
+    // input line (vim k/j), overwriting the rows above and leaving a stale
+    // row below.
     let out = '\r'
-    if (total > 1) out += `\x1b[${total - 1}A`
+    const up = over.length + inp.row
+    if (up > 0) out += `\x1b[${up}A`
     over.forEach((t) => {
       out += `\x1b[2K${t}\r\n`
     })
@@ -1223,20 +1347,25 @@ function drawBox() {
     process.stdout.write(out)
     return
   }
-  // splash: rewrite the box (cursor invariant = its input row), then keep the
-  // palette area below it in sync — an open overlay replaces meta/hints/tip/
-  // footer, closing restores them. \x1b[0J handles whatever used to be there.
+  // splash: rewrite the band row, and the palette rows ABOVE it — the region
+  // always covers the union of "rows drawn last time" and "rows wanted now",
+  // so shrinking the filter never leaves stale rows behind, and restoring
+  // pulls the exact SPLASH_ABOVE rows the palette covered. Everything happens
+  // inside the screen (never below the footer), so nothing scrolls and the
+  // cursor hops can't desync — a palette used to push rows past the bottom.
   const content = rawBuf || PLACEHOLDER
   const col = rawBuf ? rawCol + 3 : plain(PLACEHOLDER).length + 3
   const over = overlayRows()
-  let out = `\r\x1b[2K${band(content, col)}`
-  if (over.length) {
-    out += `\r\x1b[1B\x1b[0J${over.join('\r\n')}\r\n\x1b[${over.length + 1}A\x1b[${col}G`
-    palShown = true
-  } else if (palShown) {
-    out += `\r\x1b[1B\x1b[0J${SPLASH_BELOW.join('\r\n')}\r\n\x1b[${SPLASH_UP}A\x1b[${col}G`
-    palShown = false
+  const want = over.length
+  const up = Math.max(want, palRows)
+  let out = '\r'
+  if (up > 0) out += `\x1b[${up}A`
+  for (let i = 0; i < up; i++) {
+    const t = i < want ? over[i] : (SPLASH_ABOVE[SPLASH_ABOVE.length - up + i] ?? '')
+    out += `\x1b[2K${t}\r\n`
   }
+  out += `\x1b[2K${band(content, col)}`
+  palRows = want
   process.stdout.write(out)
 }
 
@@ -1314,9 +1443,15 @@ function keyInput(s) {
       } else if (overlay.resolve) {
         const items = overlayItems()
         finishOverlay(overlay.kind === 'value' ? rawBuf : (items[overlay.sel]?.value ?? null))
+      } else if (overlay.kind === 'cmds' && typedCommand()) {
+        closeOverlay() // the typed line is a real command — run it as typed
+        rawSubmit()
       } else acceptOverlay() // pick the highlighted row into the input
     } else rawSubmit()
-    if (tail && !tail.startsWith('\n')) keyInput(tail)
+    // drop only the NEWLINE of a glued "\r\n" — the rest ("line2" of a paste)
+    // is real input and must not be discarded with it
+    const rest = tail.replace(/^\n+/, '')
+    if (rest) keyInput(rest)
     return
   }
   if (overlay && overlayKey(s)) return // palette swallows every key
@@ -1617,6 +1752,10 @@ function queryRow() {
 }
 
 async function askRaw() {
+  // queued lines are served HERE too (askLine only serves piped mode): a
+  // message typed while a proposal was on screen lands in lineQueue — without
+  // this drain the TUI would drop it silently forever
+  if (lineQueue.length) return Promise.resolve(lineQueue.shift())
   if (chatMode) {
     // full redraw: conversation on top, footer + input band pinned below
     render()
@@ -1688,10 +1827,12 @@ if (TTY) {
     if (waiters.length || overlay) keyInput(s)
     else if (abortCtl && s === '\x1b') stopStream() // bare Esc while streaming
   })
-  // redraw at the new size (conversation rewrapped, footer still pinned)
+  // redraw at the new size (conversation rewrapped, footer still pinned;
+  // the splash re-anchors its composer stack to the new bottom row)
   process.stdout.on('resize', () => {
     if (chatMode && !thinking) render()
     else if (chatMode) renderSoon()
+    else if (splashLive) drawSplash()
   })
 } else {
   rl = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -1905,7 +2046,9 @@ async function proposeEdits(edits) {
   say(card(`new edit${edits.length > 1 ? 's' : ''} · ${edits.length} file${edits.length > 1 ? 's' : ''}`, rows))
   say('')
   for (;;) {
+    rawPrompt = true // slash keys belong to the y/n answer, not the palette
     const answer = (await ask()).trim().toLowerCase()
+    rawPrompt = false
     if (answer === 'r') {
       try {
         await streamReply(reviewPrompt(edits), { ephemeral: true })
@@ -1957,7 +2100,7 @@ const COMMANDS = [
   { c: '/export', d: '[path] save this transcript as markdown', g: 0 },
   { c: '/remember', d: '<fact> save a memory — or just type #fact', g: 0 },
   { c: '/rewind', d: '[n] jump back to an earlier turn (esc esc)', g: 0 },
-  { c: '/new', d: 'fresh context (clears chat, notes, skill)', g: 0 },
+  { c: '/new', d: 'fresh context — wipes chat, back to start screen', g: 0 },
   { c: '/clear', d: 'alias of /new', g: 0 },
   { c: '/model', d: '[id] list or switch model (ollama + providers)', g: 1 },
   { c: '/provider', d: '[id|nebius <key>] switch — or connect Nebius', g: 1 },
@@ -2084,8 +2227,14 @@ for (;;) {
     try {
       const res = await streamReply(line)
       if (res.edits.length) {
-        if (mode === 'auto') doApply(res.edits) // auto mode: backup + apply
-        else await proposeEdits(res.edits)
+        if (mode === 'auto') {
+          // mark the source message resolved exactly like proposeEdits does —
+          // otherwise /review re-offers edits that are already on disk (and
+          // accepting them fails with "no longer matches")
+          const last = history[history.length - 1]
+          pendingFrom = last?.role === 'assistant' ? last : null
+          doApply(res.edits) // auto mode: backup + apply
+        } else await proposeEdits(res.edits)
       }
     } catch {
       // streamReply already printed the error
@@ -2677,7 +2826,12 @@ for (;;) {
         applyTheme(args)
         saveSettings({ theme: args })
         notice(`theme → ${args} · accent ${THEMES[args].accent}`)
-      } else if (args === 'dark' || args === 'light' || args === 'acrylic') {
+      } else if (
+        args === 'dark' ||
+        args === 'light' ||
+        args === 'acrylic' ||
+        args === 'singularity'
+      ) {
         notice(`${args} is an app theme — in the terminal pick a palette: ${names.join('|')}`)
       } else {
         say(`${RED}  usage: /theme <${names.join('|')}>${RESET}`)
@@ -3123,7 +3277,15 @@ for (;;) {
     lastStats = null
     chat = []
     refreshCtx()
-    notice('fresh context — screen cleared')
+    if (TTY && chatMode) {
+      // back home: a wiped session deserves the start screen again — the
+      // splash IS the empty state, so the reset is visible, not silent
+      chatMode = false
+      splashLive = true
+      drawSplash()
+    } else {
+      notice('fresh context — screen cleared')
+    }
     continue
   }
 

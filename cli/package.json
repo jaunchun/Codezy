@@ -1,0 +1,43 @@
+{
+  "name": "codezy",
+  "version": "3.1.3",
+  "description": "CODEZY terminal companion — chat TUI and an agent CLI (tools + approvals) for Ollama and any OpenAI-compatible endpoint",
+  "type": "module",
+  "bin": {
+    "codezy": "./index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "print.mjs",
+    "codezy.mjs",
+    "codezy-v2.mjs",
+    "doctor.mjs",
+    "lib"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "win32",
+    "darwin",
+    "linux"
+  ],
+  "keywords": [
+    "ai",
+    "cli",
+    "ollama",
+    "coding-agent",
+    "tui",
+    "openai-compatible",
+    "codezy"
+  ],
+  "author": "kajtg",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jaunchun/Codezy.git",
+    "directory": "cli"
+  },
+  "homepage": "https://github.com/jaunchun/Codezy#readme",
+  "preferGlobal": true
+}

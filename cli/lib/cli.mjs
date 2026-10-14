@@ -15,15 +15,22 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const PKG = path.join(HERE, '..', '..', 'package.json')
+// cli/package.json FIRST: the CLI ships as its own npm package, so a global
+// install has no repo root next to it. The Electron app's package.json stays
+// the fallback for older checkouts.
+const PKGS = [path.join(HERE, '..', 'package.json'), path.join(HERE, '..', '..', 'package.json')]
 
-/** Version from package.json — the single source of truth. */
+/** Version from the CLI package.json — the single source of truth. */
 export function getVersion() {
-  try {
-    return JSON.parse(fs.readFileSync(PKG, 'utf8')).version ?? '0.0.0'
-  } catch {
-    return '0.0.0'
+  for (const f of PKGS) {
+    try {
+      const v = JSON.parse(fs.readFileSync(f, 'utf8')).version
+      if (v) return v
+    } catch {
+      /* try the next candidate */
+    }
   }
+  return '0.0.0'
 }
 
 /**
@@ -56,8 +63,14 @@ export function parseArgs(argv, valueFlags = []) {
       if (takesValue.has(name)) {
         if (inline !== null) {
           values[name] = inline
-        } else if (argv[i + 1] !== undefined && (name === 'p' || name === 'print' || !argv[i + 1].startsWith('-'))) {
+        } else if (argv[i + 1] !== undefined && !argv[i + 1].startsWith('-')) {
           values[name] = argv[++i]
+        } else if (name === 'p' || name === 'print') {
+          // `-p` immediately followed by another flag: leave the value UNSET
+          // so the engine falls through to positionals (or stdin) instead of
+          // eating `--dir` as the prompt. `present` still records `-p`, so
+          // one-shot routing is unaffected. (Value after the flag works:
+          // `-p "text"` — only a flag-looking token is refused.)
         } else {
           values[name] = '' // flag present without a value → read stdin
         }
@@ -76,18 +89,27 @@ export async function readStdin() {
   return buf
 }
 
+// -- one help screen, styled when it lands on a TTY, plain when piped --------
+const TTY = !!process.stdout.isTTY
+const paint = (code, s) => (TTY ? `\x1b[${code}m${s}\x1b[0m` : String(s))
+const dim = (s) => paint(2, s)
+const cyan = (s) => paint(36, s)
+const bold = (s) => paint(1, s)
+
 /** The one unified `--help` screen, codex/claude-code style. */
 export function helpText() {
-  return `CODEZY — local coding agent for the terminal  (v${getVersion()})
+  const head = (t) => bold(t)
+  return `${bold('CODEZY')} ${dim('— local coding agent for the terminal')}  ${dim(`(v${getVersion()})`)}
 
-USAGE
-  codezy                       interactive chat (TUI)
-  codezy "prompt"              one-shot: print the answer, then exit
-  codezy -p "prompt"           one-shot with an explicit flag (stdin works too)
-  codezy exec|run "prompt"     one-shot AGENT run: tools + approvals, then exit
-  codezy --agent               agent chat REPL (tools + per-action approval)
+${head('USAGE')}
+  codezy                       ${dim('interactive chat (TUI)')}
+  codezy "prompt"              ${dim('one-shot: print the answer, then exit')}
+  codezy -p "prompt"           ${dim('one-shot with an explicit flag (stdin works too)')}
+  codezy exec|run "prompt"     ${dim('one-shot AGENT run: tools + approvals, then exit')}
+  codezy --agent               ${dim('agent chat REPL (tools + per-action approval)')}
+  codezy doctor                ${dim('check install, settings and endpoint')}
 
-OPTIONS
+${head('OPTIONS')}
   -p, --print <prompt>         one-shot mode; omit the value to read stdin
   -a, --agent                  use the tool-calling agent (tools + approvals)
       --model <id>             override the model from settings
@@ -99,17 +121,22 @@ OPTIONS
   -h, --help                   show this help
   -V, --version                show the version
 
-EXAMPLES
-  codezy                                     open the chat
+${head('AGENT COMMANDS')} ${dim('(codezy --agent — type them in the REPL, TAB completes)')}
+  /root [dir]  /todos  /mcp  /search <q>  /model <id>  /tools  /auto  /export  /clear
+
+${head('EXAMPLES')}
+  codezy                                     ${dim('open the chat')}
   codezy -p "explain this stack trace"
   cat error.log | codezy -p "why is this failing?"
   codezy -p "summarize this diff" --output-format json
   codezy exec "fix the failing tests" --auto
-  codezy --agent --dir ../my-repo            agent REPL over a folder
+  codezy --agent --dir ../my-repo            ${dim('agent REPL over a folder')}
+  codezy doctor                              ${dim('is everything wired up?')}
 
-EXIT CODES
+${head('EXIT CODES')}
   0  ok    1  runtime error    2  usage error
 
-Inside a REPL: /help lists the commands. The agent REPL adds /root, /todos
-and /search <query> (instant web search, no model involved).`
+${dim('Install: npm install -g ./cli   (then `codezy` is on your PATH)')}
+${dim("Inside a REPL: /help lists the commands. The agent REPL adds /root, /todos")}
+${dim("and /search <query> (instant web search, no model involved).")}`
 }

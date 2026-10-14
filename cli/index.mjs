@@ -11,6 +11,7 @@
 //   codezy -p "prompt"    → cli/print.mjs
 //   codezy exec|run "…"   → cli/codezy-v2.mjs one-shot agent  (harness)
 //   codezy --agent […]    → cli/codezy-v2.mjs agent REPL / print
+//   codezy doctor         → cli/doctor.mjs    health check, exit 0/1
 // ---------------------------------------------------------------------------
 
 import { parseArgs, helpText, getVersion } from './lib/cli.mjs'
@@ -18,7 +19,7 @@ import { parseArgs, helpText, getVersion } from './lib/cli.mjs'
 const argv = process.argv.slice(2)
 
 const COMMON = ['h', 'help', 'V', 'version']
-const V1 = new Set([...COMMON, 'model', 'dir'])
+const V1 = new Set([...COMMON, 'model', 'dir', 'root']) // --root is documented as a --dir alias
 const PRINT = new Set([...V1, 'p', 'print', 'url', 'output-format'])
 const V2 = new Set([...COMMON, 'a', 'agent', 'p', 'print', 'model', 'dir', 'root', 'ctx', 'url', 'auto', 'output-format'])
 
@@ -34,6 +35,18 @@ if (A.present.has('V') || A.present.has('version')) {
   process.exit(0)
 }
 
+// -- doctor: a health check, not an engine -------------------------------------
+if (A.positionals[0] === 'doctor' && A.positionals.length === 1) {
+  for (const flag of A.present) {
+    if (!COMMON.includes(flag)) {
+      const dash = flag.length === 1 ? '-' : '--'
+      process.stderr.write(`codezy: unknown option ${dash}${flag} for "doctor"\nrun: codezy --help\n`)
+      process.exit(2)
+    }
+  }
+  await import('./doctor.mjs') // prints the report and exits 0/1 itself
+}
+
 // -- pick the engine ----------------------------------------------------------
 const sub = A.positionals[0]
 const agent = A.present.has('agent') || A.present.has('a') || sub === 'exec' || sub === 'run'
@@ -46,7 +59,8 @@ const known = agent ? V2 : oneShot ? PRINT : V1
 for (const flag of A.present) {
   if (!known.has(flag)) {
     const dash = flag.length === 1 ? '-' : '--'
-    process.stderr.write(`codezy: unknown option ${dash}${flag}\nrun: codezy --help\n`)
+    const col = process.stderr.isTTY ? (s) => `\x1b[31m${s}\x1b[0m` : (s) => s
+    process.stderr.write(`${col(`codezy: unknown option ${dash}${flag}`)}\nrun: codezy --help\n`)
     process.exit(2)
   }
 }

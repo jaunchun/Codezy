@@ -8,10 +8,13 @@ import SettingsModal from './components/SettingsModal'
 import SetupScreen from './components/SetupScreen'
 import ToastStack from './components/ToastStack'
 import Palette from './components/Palette'
+import SearchOverlay from './components/SearchOverlay'
 import ApproveModal from './components/ApproveModal'
 import Shortcuts from './components/Shortcuts'
+import HistoryModal from './components/HistoryModal'
 import IdePane from './components/IdePane'
 import BootSplash from './components/BootSplash'
+import SingularityBg from './components/SingularityBg'
 
 export default function App() {
   const ready = useApp((s) => s.ready)
@@ -48,6 +51,10 @@ export default function App() {
         e.preventDefault()
         useApp.getState().setUsageOpen(true)
       }
+      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault() // cross-chat search (v3.1) — the find bar checks !shiftKey
+        useApp.getState().setSearchOpen(!useApp.getState().searchOpen)
+      }
       if (e.ctrlKey && e.key.toLowerCase() === 'k') {
         e.preventDefault()
         useApp.getState().setPaletteOpen(!useApp.getState().paletteOpen)
@@ -74,6 +81,7 @@ export default function App() {
   return (
     <>
       <BootSplash ready />
+      {settings?.theme === 'singularity' && <SingularityBg />}
       <div className={`app${setupOpen ? ' setup' : ''}`}>
         <TitleBar title={session?.title} />
         <div className={`app-body${sidebarOpen ? '' : ' focus'}${ideOpen ? ' code' : ''}`}>
@@ -88,7 +96,9 @@ export default function App() {
         {setupOpen && <SetupScreen />}
         <ApproveModal />
         <Palette />
+        <SearchOverlay />
         <Shortcuts />
+        <HistoryModal />
         <ToastStack />
       </div>
     </>
