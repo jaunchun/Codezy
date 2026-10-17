@@ -1,5 +1,0 @@
-export { CodeBlock } from 'C:/Users/kajtg/Documents/Projekt domyślny/codezy/src/renderer/src/components/ChatView'
-export { useApp } from 'C:/Users/kajtg/Documents/Projekt domyślny/codezy/src/renderer/src/store/app'
-export { createRoot } from 'react-dom/client'
-export { act } from 'react'
-export { createElement } from 'react'

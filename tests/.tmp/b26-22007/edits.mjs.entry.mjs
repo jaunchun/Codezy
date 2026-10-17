@@ -1,2 +1,0 @@
-export { applyCodeBlock, applyEdits, undoLast } from 'C:/Users/kajtg/Documents/Projekt domyślny/codezy/src/main/edits'
-export { initStore } from 'C:/Users/kajtg/Documents/Projekt domyślny/codezy/src/main/store'

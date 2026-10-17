@@ -1,2 +1,0 @@
-export { listV2Tasks, stopV2Task } from 'C:/Users/kajtg/Documents/Projekt domyślny/codezy/src/main/v2'
-export { runAgent, makeRegistry } from 'C:/Users/kajtg/Documents/Projekt domyślny/codezy/cli/lib/harness.mjs'

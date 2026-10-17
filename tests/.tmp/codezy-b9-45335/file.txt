@@ -1,3 +1,0 @@
-hello b9
-line two
-line three
