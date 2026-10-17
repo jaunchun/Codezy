@@ -21,7 +21,7 @@ const argv = process.argv.slice(2)
 const COMMON = ['h', 'help', 'V', 'version']
 const V1 = new Set([...COMMON, 'model', 'dir', 'root']) // --root is documented as a --dir alias
 const PRINT = new Set([...V1, 'p', 'print', 'url', 'output-format'])
-const V2 = new Set([...COMMON, 'a', 'agent', 'p', 'print', 'model', 'dir', 'root', 'ctx', 'url', 'auto', 'output-format'])
+const V2 = new Set([...COMMON, 'a', 'agent', 'p', 'print', 'model', 'dir', 'root', 'ctx', 'url', 'auto', 'output-format', 'c', 'continue'])
 
 const A = parseArgs(argv, ['model', 'dir', 'root', 'ctx', 'url', 'print', 'p', 'output-format'])
 
@@ -49,7 +49,7 @@ if (A.positionals[0] === 'doctor' && A.positionals.length === 1) {
 
 // -- pick the engine ----------------------------------------------------------
 const sub = A.positionals[0]
-const agent = A.present.has('agent') || A.present.has('a') || sub === 'exec' || sub === 'run'
+const agent = A.present.has('agent') || A.present.has('a') || sub === 'exec' || sub === 'run' || A.present.has('continue') || A.present.has('c')
 const oneShot =
   A.present.has('p') || A.present.has('print') || A.positionals.length > 0
 

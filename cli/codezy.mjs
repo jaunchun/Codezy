@@ -15,6 +15,7 @@ import path from 'node:path'
 import readline from 'node:readline'
 import { spawnSync } from 'node:child_process'
 
+import { getVersion } from './lib/cli.mjs'
 import { EFFORTS, isEffort, contextSizeFor, listOllamaModels, listOpenAIModels, streamChat, fmtSize, pingOllama } from './lib/engine.mjs'
 import { wrapPlain, renderMd } from './lib/md.mjs'
 import { webSearch } from './lib/search.mjs'
@@ -743,12 +744,10 @@ setTitle('CODEZY terminal')
 // SPLASH_BELOW are the exact rows around the live band — SPLASH_TOP and
 // SPLASH_UP derive from them, so the prompt cursor hops always agree.
 
-let pkg = { version: '0.0.0' }
-try {
-  pkg = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'package.json'), 'utf8'))
-} catch {
-  // no package.json next to the script — keep the fallback version
-}
+// Version through the shared reader (cli/package.json first, repo root as the
+// fallback for older checkouts) — fileURLToPath-based, so Node 18 stays
+// supported instead of import.meta.dirname (20.11+) breaking engines >=18.
+const pkg = { version: getVersion() }
 
 const home = os.homedir()
 const cwd = process.cwd()
@@ -1274,7 +1273,8 @@ function render() {
     const stage = got
       ? `${got} chars · ${Math.max(Math.round((Date.now() - thinkT0) / 1000), 1)}s · esc to stop`
       : `thinking… · esc to stop`
-    all.push(`${ACCENT}${glyph}${RESET} ${DIM}${stage}${RESET}`)
+    // messages typed during the reply wait their turn — say how many
+    all.push(`${ACCENT}${glyph}${RESET} ${DIM}${stage}${lineQueue.length ? ` · ${lineQueue.length} queued` : ''}${RESET}`)
   }
   const inp = inputRows()
   const over = overlayRows()
@@ -1456,8 +1456,9 @@ function keyInput(s) {
   }
   if (overlay && overlayKey(s)) return // palette swallows every key
   if (s === '\n') {
-    // shift+enter (WT sends LF): a new line in the message — never in splash
-    if (!splashLive && waiters.length) {
+    // shift+enter (WT sends LF): a new line in the message — never in
+    // splash; also while the model is replying (composer stays live)
+    if (!splashLive && (waiters.length || thinking || !!abortCtl)) {
       insertBuf('\n')
       drawBox()
     }
@@ -1735,6 +1736,51 @@ function doRewind(userIdx) {
   notice(`rewound ${drop} message${drop === 1 ? '' : 's'} — ${history.length} left · files untouched, /undo reverts edits`)
 }
 
+const dec = new TextDecoder()
+
+/**
+ * Route one decoded stdin chunk. While a cursor-position query is out, the
+ * DSR branch buffers bytes first — and queryRow REPLAYS whatever accumulated
+ * on timeout, so keystrokes from a fast typist are never eaten by the 250ms
+ * wait (on a pipe there is no report at all and the wait always runs out).
+ */
+function handleKey(s) {
+  if (dsrWait) {
+    dsrWait.buf += s
+    const m = dsrWait.buf.match(/\x1b\[(\d+);(\d+)R/)
+    if (!m) return // wait for the rest of the report
+    s = dsrWait.buf.slice(m.index + m[0].length)
+    const w = dsrWait
+    dsrWait = null
+    clearTimeout(w.timer)
+    w.resolve(Number(m[1]))
+    if (!s) return
+  }
+  // bracketed paste: swallow the markers, keep the payload
+  if (s.includes('\x1b[200~')) {
+    s = s.slice(s.indexOf('\x1b[200~') + '\x1b[200~'.length)
+    pasting = true
+  }
+  if (s.includes('\x1b[201~')) {
+    s = s.slice(0, s.indexOf('\x1b[201~'))
+    pasting = false
+  }
+  const streaming = thinking || !!abortCtl
+  if (pasting) {
+    if (waiters.length || overlay || streaming) applyPaste(s)
+    return
+  }
+  // a picker/prompt keeps input flowing even while no ask() is pending — and
+  // so does the composer: what nobody can consume yet sits in the composer or
+  // lineQueue instead of vanishing. Esc priority: an open overlay handles its
+  // own Esc first; otherwise bare/glued Esc stops a streaming reply, and
+  // every other key reaches the composer (typing, the / palette,
+  // Enter → submit-or-queue, ctrl+c).
+  if (waiters.length || overlay) keyInput(s)
+  else if (/^(\x1b)+$/.test(s) && streaming) stopStream()
+  else keyInput(s)
+}
+
 function queryRow() {
   // ask the terminal where the cursor is (1-based row); null on timeout
   return new Promise((resolve) => {
@@ -1743,7 +1789,12 @@ function queryRow() {
     w.timer = setTimeout(() => {
       if (dsrWait === w) {
         dsrWait = null
+        const pending = w.buf // typed while the query was out — never eat it
         resolve(null)
+        // askRaw parks its waiter on the microtask AFTER this callback, so
+        // the replay lands in lineQueue and askRaw's post-query drain picks
+        // the line up — it runs as if it had arrived a beat later
+        if (pending) handleKey(pending)
       }
     }, 250)
     dsrWait = w
@@ -1766,6 +1817,9 @@ async function askRaw() {
   // splash: jump back to the preview box under the wordmark — measure the
   // cursor in case a command printed below it since the last prompt
   const row = await queryRow()
+  // bytes that arrived during the DSR wait were replayed into lineQueue —
+  // serve them now, before parking on a waiter nothing would ever wake
+  if (lineQueue.length) return Promise.resolve(lineQueue.shift())
   const up = row ? row - (SPLASH_TOP + 1) : SPLASH_UP
   return new Promise((resolve) => {
     waiters.push(resolve)
@@ -1791,42 +1845,15 @@ function askLine() {
 }
 
 if (TTY) {
-  // one global reader: keys typed while the model is talking are dropped
-  // (except Esc = stop). Bracketed paste keeps pasted newlines literal.
+  // one global reader: the composer stays LIVE while the model is talking —
+  // keys feed keyInput, and Enter lands in rawSubmit (commands stop the reply
+  // and run right after it unwinds; plain text queues to send after it).
+  // Bare Esc keeps its stop meaning. Bracketed paste keeps pasted newlines
+  // literal.
   process.stdin.setRawMode?.(true) // optional: pipes have no raw mode
   process.stdin.resume()
   process.stdout.write('\x1b[?2004h')
-  const dec = new TextDecoder()
-  process.stdin.on('data', (c) => {
-    let s = dec.decode(c, { stream: true })
-    if (dsrWait) {
-      dsrWait.buf += s
-      const m = dsrWait.buf.match(/\x1b\[(\d+);(\d+)R/)
-      if (!m) return // wait for the rest of the report
-      s = dsrWait.buf.slice(m.index + m[0].length)
-      const w = dsrWait
-      dsrWait = null
-      clearTimeout(w.timer)
-      w.resolve(Number(m[1]))
-      if (!s) return
-    }
-    // bracketed paste: swallow the markers, keep the payload
-    if (s.includes('\x1b[200~')) {
-      s = s.slice(s.indexOf('\x1b[200~') + '\x1b[200~'.length)
-      pasting = true
-    }
-    if (s.includes('\x1b[201~')) {
-      s = s.slice(0, s.indexOf('\x1b[201~'))
-      pasting = false
-    }
-    if (pasting) {
-      if (waiters.length || overlay) applyPaste(s)
-      return
-    }
-    // a picker/prompt keeps input flowing even while no ask() is pending
-    if (waiters.length || overlay) keyInput(s)
-    else if (abortCtl && s === '\x1b') stopStream() // bare Esc while streaming
-  })
+  process.stdin.on('data', (c) => handleKey(dec.decode(c, { stream: true })))
   // redraw at the new size (conversation rewrapped, footer still pinned;
   // the splash re-anchors its composer stack to the new bottom row)
   process.stdout.on('resize', () => {

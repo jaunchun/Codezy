@@ -117,6 +117,7 @@ ${head('OPTIONS')}
       --url <url>              Ollama or OpenAI-compatible endpoint
       --ctx <n>                context window (agent mode, default 65536)
       --auto                   agent mode: approve gated tools automatically
+  -c, --continue             resume the last saved agent session (agent mode)
       --output-format <fmt>    one-shot output: text (default) · json · stream-json
   -h, --help                   show this help
   -V, --version                show the version
@@ -136,7 +137,7 @@ ${head('EXAMPLES')}
 ${head('EXIT CODES')}
   0  ok    1  runtime error    2  usage error
 
-${dim('Install: npm install -g ./cli   (then `codezy` is on your PATH)')}
+${dim('Install: npm install -g codezy   (from a checkout: npm install -g ./cli)')}
 ${dim("Inside a REPL: /help lists the commands. The agent REPL adds /root, /todos")}
 ${dim("and /search <query> (instant web search, no model involved).")}`
 }

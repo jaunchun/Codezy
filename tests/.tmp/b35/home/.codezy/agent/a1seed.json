@@ -1,0 +1,19 @@
+{
+  "id": "a1seed",
+  "title": "seeded session",
+  "savedAt": 1792003951718,
+  "model": "test-model",
+  "roots": [
+    "C:\\Users\\kajtg\\Documents\\Projekt domyślny\\codezy\\tests\\.tmp\\b35"
+  ],
+  "history": [
+    {
+      "role": "user",
+      "content": "hello from seed"
+    },
+    {
+      "role": "assistant",
+      "content": "hi back from seed"
+    }
+  ]
+}

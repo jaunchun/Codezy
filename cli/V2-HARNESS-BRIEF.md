@@ -1,5 +1,78 @@
 # CODEZY v2 — Agent Orchestration Harness (handoff brief)
 
+> **STATUS (CLI/v1 round — the composer stays LIVE while the model talks):**
+> fixed the reported "streaming swallows every key" bug in `codezy.mjs`
+> without touching stdin handlers' structure or the command chain. (1) The
+> stdin router now feeds `keyInput` during a reply (`const streaming =
+> thinking || !!abortCtl`): Enter mid-stream hits the EXISTING rawSubmit
+> contract — a `/command` stops the reply (abort) and runs right after it
+> unwinds, plain text pushes to lineQueue and auto-sends after (askRaw
+> already drains lineQueue first). Bare/glued Esc (`/^(</x1b)+$/`) keeps
+> stop-the-stream priority before keyInput's own Esc handling; an open
+> palette/overlay keeps first crack at Esc. (2) The progress row shows
+> `· N queued` while lines wait (`render()` reads lineQueue.length). (3)
+> shift+enter inserts a newline mid-stream too. (4) ROUTER NEVER EATS
+> INPUT: the old final branch dropped keys when no waiter/overlay/stream
+> existed (loop between asks) — now `else keyInput(s)` always reaches the
+> composer; Enter-without-waiter queues like piped readline. (5) DSR
+> fast-typist fix: keystrokes arriving while queryRow's 250ms cursor query
+> is out were buffered into dsrWait.buf and DISCARDED on timeout — on a
+> pipe (tests, redirected TUI) that ate any input written <~300ms after
+> boot. Extracted the stdin handler to module-scope `handleKey(s)`,
+> queryRow now replays `pending` after resolve (askRaw parks its waiter on
+> the following microtask), and askRaw drains lineQueue right after the
+> await before parking. batch36 = new 14-check live suite (CODEZY_TTY
+> spawns: queue counter `· 1 queued` observed, esc→`stopped`,
+> queued-line auto-sends a 2nd stream, `/usage` palette path RUNS
+> mid-stream + aborts the reply, 5 source pins). Full suite **36/36 ALL
+> PASS**. Debug seams: tests\.tmp\debug-stream.mjs / debug-stream2.mjs.
+
+> **STATUS (phase 1 — harness & agent round):** `lib/harness.mjs` got
+> `PARALLEL_SAFE` (only read-only `list_dir/read_file/grep_search/glob/
+> web_search/web_fetch` prefixes run via Promise.all; the first mutating/
+> gated/unknown call demotes the rest to a sequential tail; tool messages
+> always pushed in wireCalls order; gated reads demote themselves),
+> `isTransient()` retry classifier + `callWithRetry` (408/429/5xx +
+> ECONNREFUSED/ETIMEDOUT/ECONNRESET/EPIPE/EAI_AGAIN/fetch failed/socket
+> hang up/timed out; never AbortError; "model not found" fails fast;
+> `retries=2, retryDelayMs=400` ×3 backoff, injectable; retry surfaced via
+> onEvent), `usage` accumulation on ALL return paths, abort→`{status:
+> 'stopped', messages, usage}` (chain intact), and a run1 executor with
+> the concurrent read prefix. v2 REPL: spinner elapsed seconds, approval
+> preview `approvalView` + `a=always`, `~/.codezy/agent/` session
+> saves/resume, `-c/--continue` routing (index.mjs + helpText — implies
+> agent mode, loads newest save), `sessionUsage/addUsage`, `compactHistory`
+> auto-past-60 + `/compact`, `/resume` + `/usage` commands + SLASH + help,
+> `turn()` restructure (AbortController, autosave, auto-compact, pinned
+> tools-ternary line verbatim ×2, `signal: ctl.signal`), SIGINT interrupt
+> handler, onEvent `retry` display. Verified: probe-harness 11/11,
+> batch35 (30 checks) ALL PASS, batches 9/11/18/22/29/30/34 green,
+> node --check clean everywhere.
+
+> **STATUS (npm publish readiness — `codezy` is installable):** the CLI package
+> is now complete enough to publish. Name `codezy` is FREE on the registry
+> (404 = unclaimed). Added `cli/README.md` (the npm page: install · quick start
+> · requirements · modes table · REPL commands · exit codes) and `cli/LICENSE`
+> (root MIT copy) — npm auto-includes README/LICENSE regardless of `files`.
+> Fixed the one engines-vs-code contradiction: `codezy.mjs` read package.json
+> via `import.meta.dirname` (Node 20.11+ — on Node 18 the try/catch silently
+> degraded the footer version to 0.0.0) → now `const pkg = { version:
+> getVersion() }` from lib/cli.mjs like every other entry point; grep confirms
+> no Node-20+ API remains anywhere in `cli/`, so `engines: >=18` is honest.
+> `--help`'s install line is registry-first (`Install: npm install -g codezy
+> (from a checkout: npm install -g ./cli)`), README CLI section matches
+> (registry-first, Windows/macOS/Linux — no historical What's-new edits).
+> Verified by a REAL install: `npm pack` → `codezy-3.1.3.tgz` (17 files,
+> 85.2 kB packed / 272.3 kB unpacked, tarball parked in tests\.tmp) → `npm
+> install -g <tgz> --prefix <temp>` → the generated shim runs `--version` →
+> `codezy 3.1.3` exit 0, `--help` exit 0 with the new line, and `doctor`
+> ALL-GREEN exit 0 from the INSTALLED layout (endpoint + model reachable).
+> `npm publish --dry-run` passes with only the expected ENEEDAUTH warning.
+> **Pending, needs the owner: `npm login` + `npm publish` (or a token) —
+> until that runs, the README's registry line is aspirational.** WSL is not
+> installed on this box → no Linux runtime signal; Node 18 floor untested on
+> a real 18 (machine runs v24).
+
 > **STATUS (TUI session polish — home is a state, the tab is a lamp):** four
 > quality-of-life upgrades on top of the splash redesign. (1) `/new` (and its
 > `/clear` alias) run from chat mode now RETURN TO THE START SCREEN — the

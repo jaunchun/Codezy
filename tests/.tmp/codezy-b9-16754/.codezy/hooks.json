@@ -1,0 +1,1 @@
+{"before_tool":[{"tools":["*"],"command":"node \"tests\\.tmp\\codezy-b9-16754\\hook.js\" \"tests\\.tmp\\codezy-b9-16754\\hook-stdin.log\" 0"}]}

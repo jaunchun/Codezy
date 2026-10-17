@@ -41,6 +41,12 @@ export const DANGEROUS_TOOLS = new Set(['write_file', 'edit_file', 'run_command'
 /** Tools that change the disk or run code — plan mode refuses all of them. */
 export const MUTATING_TOOLS = new Set(['write_file', 'edit_file', 'run_command'])
 
+/** Read-only tools — a batch of these at the FRONT of one turn runs concurrently
+ *  (models love batching reads; N serial round-trips through the FS is pure
+ *  latency). Anything else — gated, mutating, stateful, MCP-unknown — starts a
+ *  strictly sequential tail so any ordering the model implied is preserved. */
+export const PARALLEL_SAFE = new Set(['list_dir', 'read_file', 'grep_search', 'glob', 'web_search', 'web_fetch'])
+
 /** v3 sub-agent tool schema — merged into the loop by runAgent itself. */
 export const DELEGATE_TOOL = {
   type: 'function',
@@ -937,6 +943,52 @@ function runHooks(hooks, phase, name, args) {
   return null
 }
 
+// -- transient model-call retry ------------------------------------------------
+
+/**
+ * Only genuine transport hiccups retry: HTTP 408/429/5xx and refused / reset /
+ * timed-out sockets. "model not found" and friends fail fast — retrying them
+ * only delays the honest error. An abort never retries.
+ */
+export function isTransient(e) {
+  if (e?.name === 'AbortError' || e?.code === 'ABORT_ERR') return false
+  const m = String(e?.message ?? e ?? '')
+  if (/(ECONNREFUSED|ETIMEDOUT|ECONNRESET|EPIPE|EAI_AGAIN|fetch failed|socket hang up)/i.test(m)) return true
+  const http = m.match(/(?:Ollama|API) error (\d{3})/)
+  if (http) {
+    const s = Number(http[1])
+    return s === 408 || s === 429 || s >= 500
+  }
+  return /timed? out/i.test(m)
+}
+
+const abortError = () => {
+  const e = new Error('The operation was aborted')
+  e.name = 'AbortError'
+  return e
+}
+
+/** callModel with short backoff on transient failures (2 retries by default).
+ *  Nothing is appended to the chain before the call succeeds, so a retry
+ *  re-sends the exact same messages — history can never double-append. */
+async function callWithRetry({ callModel, params, retries, retryDelayMs, onEvent }) {
+  let lastErr
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (params.signal?.aborted) throw abortError()
+    try {
+      return await callModel(params)
+    } catch (e) {
+      lastErr = e
+      if (e?.name === 'AbortError' || params.signal?.aborted) throw e
+      if (attempt >= retries || !isTransient(e)) throw e
+      const wait = retryDelayMs * 3 ** attempt
+      onEvent({ type: 'retry', attempt: attempt + 1, max: retries, wait, error: String(e?.message ?? e) })
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait))
+    }
+  }
+  throw lastErr
+}
+
 // -- the loop ----------------------------------------------------------------
 
 function normalizeArgs(raw) {
@@ -1148,6 +1200,8 @@ export async function runAgent({
   needsApproval = (name) => DANGEROUS_TOOLS.has(name),
   maxIter = DEFAULT_MAX_ITER,
   toolResultCap = 16000,
+  retries = 2,
+  retryDelayMs = 400,
   onEvent = () => {},
   hooks = null,
   signal,
@@ -1203,12 +1257,15 @@ export async function runAgent({
   const toolNames = new Set(Object.keys(effRegistry))
   const capIter = Math.min(40, Math.max(5, Math.floor(maxIter) || DEFAULT_MAX_ITER))
   const msgs = messages.map((m) => ({ ...m }))
+  // token totals across every model call of this chain (returned to the shell
+  // so /usage-style readouts don't need a second accounting path)
+  const usage = { promptTokens: 0, completionTokens: 0, calls: 0 }
 
   let iter = 0
   for (;;) {
     if (iter >= capIter) {
       onEvent({ type: 'end', status: 'limit', iterations: iter })
-      return { status: 'limit', text: '', messages: msgs, iterations: iter }
+      return { status: 'limit', text: '', messages: msgs, iterations: iter, usage }
     }
     iter++
 
@@ -1216,7 +1273,23 @@ export async function runAgent({
     // before the call, rather than letting Ollama front-truncate silently
     fitContext(msgs)
 
-    const res = await callModel({ messages: msgs, tools: effTools, signal })
+    let res
+    try {
+      res = await callWithRetry({ callModel, params: { messages: msgs, tools: effTools, signal }, retries, retryDelayMs, onEvent })
+    } catch (e) {
+      // user interrupt (or a dead signal) → stop CLEANLY with the chain as it
+      // stands: every completed tool result stays, nothing is half-appended
+      if (e?.name === 'AbortError' || signal?.aborted) {
+        onEvent({ type: 'end', status: 'stopped', iterations: iter })
+        return { status: 'stopped', text: '', messages: msgs, iterations: iter, usage }
+      }
+      throw e
+    }
+    usage.calls++
+    if (res.stats) {
+      usage.promptTokens += Number(res.stats.promptTokens) || 0
+      usage.completionTokens += Number(res.stats.completionTokens) || 0
+    }
     const content = res.content ?? ''
     // API tool_calls first; otherwise a text-form call written into the reply
     const calls = Array.isArray(res.tool_calls) && res.tool_calls.length
@@ -1227,7 +1300,7 @@ export async function runAgent({
       // plain text → terminate (the reply joins the history, done)
       msgs.push({ role: 'assistant', content })
       onEvent({ type: 'end', status: 'text', iterations: iter, text: content })
-      return { status: 'text', text: content, messages: msgs, iterations: iter }
+      return { status: 'text', text: content, messages: msgs, iterations: iter, usage }
     }
 
     // (1) the assistant message carrying the tool_calls payload — every call
@@ -1248,8 +1321,16 @@ export async function runAgent({
     const assistantMsg = { role: 'assistant', content, tool_calls: wireCalls }
     msgs.push(assistantMsg)
 
-    // (2) one role:"tool" message per call, mapped by function name
-    for (const call of wireCalls) {
+    // (2) one role:"tool" message per call, mapped by function name.
+    //     A prefix of READ-ONLY calls runs concurrently (Promise.all) — models
+    //     batch reads constantly and N serial FS/network round-trips are pure
+    //     latency. From the first mutating/gated/unknown call onward the tail
+    //     runs strictly sequentially, preserving any ordering the model implied.
+    //     Tool messages are pushed in wireCalls order NO MATTER which call
+    //     finishes first — pairing and history shape never depend on
+    //     completion order. Gated reads demote themselves to the tail:
+    //     approvals are a one-question-at-a-time human UI.
+    const run1 = async (call) => {
       const name = call.function.name ?? '(unnamed)'
       const args = normalizeArgs(call.function.arguments)
       let outcome = 'ok'
@@ -1295,13 +1376,32 @@ export async function runAgent({
         }
       }
 
-      msgs.push({
+      onEvent({ type: 'tool', iteration: iter, name, args, outcome, result, ms: Date.now() - t0 })
+      return {
         role: 'tool',
         tool_name: name, // Ollama native pairing key
         tool_call_id: call.id, // OpenAI-compatible pairing key (always set now)
         content: result
-      })
-      onEvent({ type: 'tool', iteration: iter, name, args, outcome, result, ms: Date.now() - t0 })
+      }
     }
+
+    // scan the read-only prefix: first unsafe call (or gated read) splits the batch
+    let split = wireCalls.length
+    for (let i = 0; i < wireCalls.length; i++) {
+      const n = wireCalls[i].function.name
+      if (!PARALLEL_SAFE.has(n)) {
+        split = i
+        break
+      }
+      if (await needsApproval(n, normalizeArgs(wireCalls[i].function.arguments))) {
+        split = i
+        break
+      }
+    }
+    if (split > 0) {
+      const head = await Promise.all(wireCalls.slice(0, split).map((c) => run1(c)))
+      for (const m of head) msgs.push(m)
+    }
+    for (let i = split; i < wireCalls.length; i++) msgs.push(await run1(wireCalls[i]))
   }
 }

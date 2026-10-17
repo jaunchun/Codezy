@@ -108,10 +108,14 @@ const spinAllowed = () => TTY && !PRINT && !!process.stderr.isTTY && !!process.s
 function spinStart(label = 'thinking') {
   if (!spinAllowed() || spinTimer) return
   spinFrame = 0
+  const t0 = Date.now()
   const draw = () => {
     if (awaitingApproval) return // the y/N question owns the line now
     if (rl?.line) return // the user is typing — never wipe their echo
-    process.stderr.write(`\r\x1b[K${dim(`${SPIN[spinFrame++ % SPIN.length]} ${label}…`)}`)
+    // after 2s show elapsed time — a quiet local model must never look frozen
+    const secs = Math.floor((Date.now() - t0) / 1000)
+    const tick = secs >= 2 ? ` ${secs}s` : ''
+    process.stderr.write(`\r\x1b[K${dim(`${SPIN[spinFrame++ % SPIN.length]} ${label}…${tick}`)}`)
   }
   draw()
   spinTimer = setInterval(draw, 90)
@@ -133,6 +137,134 @@ function spinStop() {
 
 let roots = [ROOT0]
 let history = [] // assistant/tool chain from the previous turn (stateful!)
+
+// -- agent session saves (~/.codezy/agent/) ------------------------------------
+// Autosaved after EVERY turn, so Ctrl+D (or a crash) never costs a chain.
+// Deliberately its own folder: v1's /resume and the desktop app's session
+// lists never see these files, and a v2 chain (tool_calls / role:"tool") is
+// not a v1 conversation shape.
+const AGENT_DIR = path.join(HOME, 'agent')
+let saveId = null
+let saveTitle = ''
+
+function listAgentSaves() {
+  const out = []
+  try {
+    for (const f of fs.readdirSync(AGENT_DIR).filter((x) => x.endsWith('.json'))) {
+      try {
+        const s = JSON.parse(fs.readFileSync(path.join(AGENT_DIR, f), 'utf8'))
+        if (s?.id && Array.isArray(s.history)) out.push(s)
+      } catch {
+        // skip a corrupt file — one bad save must not hide the others
+      }
+    }
+  } catch {
+    // no saves yet
+  }
+  return out.sort((a, b) => (b.savedAt ?? 0) - (a.savedAt ?? 0))
+}
+
+function autosave() {
+  if (!history.length) return
+  try {
+    fs.mkdirSync(AGENT_DIR, { recursive: true })
+    if (!saveId) saveId = `a${Date.now().toString(36)}`
+    if (!saveTitle) {
+      saveTitle = String(history.find((m) => m.role === 'user')?.content ?? 'agent session')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 56)
+    }
+    fs.writeFileSync(
+      path.join(AGENT_DIR, `${saveId}.json`),
+      JSON.stringify({ id: saveId, title: saveTitle, savedAt: Date.now(), model: MODEL, roots, history }, null, 2),
+      'utf8'
+    )
+  } catch {
+    // saving is best-effort — never break the chat over it
+  }
+}
+
+function resumeSave(s) {
+  history = Array.isArray(s.history) ? s.history : []
+  if (Array.isArray(s.roots) && s.roots.length) roots = s.roots
+  saveId = s.id
+  saveTitle = s.title || 'untitled'
+}
+
+// -- session usage (/usage) ------------------------------------------------------
+const sessionUsage = { promptTokens: 0, completionTokens: 0, calls: 0 }
+function addUsage(u) {
+  if (!u) return
+  sessionUsage.promptTokens += Number(u.promptTokens) || 0
+  sessionUsage.completionTokens += Number(u.completionTokens) || 0
+  sessionUsage.calls += Number(u.calls) || 0
+}
+
+// --continue / -c: restore the newest save at startup (REPL and exec alike)
+if (A.present.has('continue') || A.present.has('c')) {
+  const latest = listAgentSaves()[0]
+  const out = PRINT ? console.error : console.log // stdout stays machine-readable
+  if (latest) {
+    resumeSave(latest)
+    out(dim(`resumed "${saveTitle}" — ${history.length} messages · /clear starts fresh`))
+  } else {
+    out(dim(`no saved agent session in ${AGENT_DIR} to continue`))
+  }
+}
+
+// -- auto-compact (/compact) -----------------------------------------------------
+// Long chains bloat the window and blur the model's focus. Older messages
+// collapse into one summary; the last 6 (and the SYSTEM line rebuilt per
+// turn) always survive. Runs manually via /compact and automatically past
+// 60 messages inside turn().
+let compacting = false
+async function compactHistory(manual) {
+  if (compacting) return false
+  if (history.length < 6) {
+    if (manual) console.log(dim('nothing to compact yet — the chain is still short'))
+    return false
+  }
+  compacting = true
+  try {
+    const keep = history.slice(-6)
+    const old = history.slice(0, Math.max(history.length - 6, 1))
+    if (manual) console.log(dim(`compacting ${old.length} messages…`))
+    const convo = old
+      .map((m) =>
+        m.role === 'tool'
+          ? `${m.tool_name ?? 'tool'}: [result] ${String(m.content ?? '').slice(0, 500)}`
+          : `${m.role}: ${typeof m.content === 'string' ? m.content.slice(0, 3000) : ''}`
+      )
+      .join('\n\n')
+    const res = await call({
+      messages: [
+        {
+          role: 'user',
+          content:
+            `Summarize this coding-assistant conversation for continuation. ` +
+            `Keep decisions, file paths, code state, and open tasks. Max 15 lines, no preamble.\n\n${convo}`
+        }
+      ]
+    })
+    if (res.stats) {
+      addUsage(res.stats)
+      sessionUsage.calls++
+    }
+    const summary = String(res.content ?? '').trim()
+    if (!summary) return false
+    history = [
+      { role: 'user', content: `[conversation summary]\n${summary}` },
+      { role: 'assistant', content: 'Understood — continuing from the summary above.' },
+      ...keep
+    ]
+    if (manual) console.log(dim(`compacted — ${old.length} messages → 1 summary (+${keep.length} kept)`))
+    return true
+  } finally {
+    compacting = false
+  }
+}
+
 const SYSTEM = `You are CODEZY, a coding agent running in the user's terminal.
 You have tools: list_dir, read_file, write_file, edit_file, glob, grep_search, run_command,
 task_status, web_search, web_fetch, todo_write. Inspect the workspace with them before
@@ -151,16 +283,19 @@ user for approval first — say in one short sentence what you are about to do.`
 const SLASH = [
   '/auto',
   '/clear',
+  '/compact',
   '/exit',
   '/export',
   '/help',
   '/mcp',
   '/model',
   '/quit',
+  '/resume',
   '/root',
   '/search',
   '/todos',
-  '/tools'
+  '/tools',
+  '/usage'
 ]
 const completer = (line) => {
   const hits = SLASH.filter((k) => k.startsWith(line))
@@ -185,21 +320,48 @@ function question(q) {
 // -- approval gate (the injected TUI half) ----------------------------------------
 
 let awaitingApproval = false // the y/N question owns the next line of input
+const always = new Set() // "a" at the prompt — trust this tool for the session
+
+/** What the approval prompt shows: a one-line description plus a tiny preview
+ *  (first rows of a new file, a −/+ mini-diff for an edit) so the human
+ *  approves a CHANGE, not a tool name. Piped runs never reach this. */
+function approvalView(name, args) {
+  const lines = []
+  let what
+  if (name === 'write_file') {
+    const body = String(args.content ?? '')
+    what = `write ${args.path} (${body.split('\n').length} lines)`
+    for (const l of body.split('\n').slice(0, 2)) if (l.trim()) lines.push(`  ${dim('│')} ${dim(l.slice(0, 100))}`)
+  } else if (name === 'edit_file') {
+    const o = String(args.old ?? '')
+    const nw = String(args.new ?? '')
+    what = `edit ${args.path} (${o.split('\n').length}→${nw.split('\n').length} lines${args.replace_all ? ' · all matches' : ''})`
+    // compact diff preview: up to 2 removed + 2 added rows, never more
+    lines.push(...o.split('\n').slice(0, 2).map((l) => `  ${red('−')} ${dim(l.slice(0, 100))}`))
+    lines.push(...nw.split('\n').slice(0, 2).map((l) => `  ${green('+')} ${dim(l.slice(0, 100))}`))
+  } else if (name === 'run_command') {
+    what = String(args.command ?? '').replace(/\s*\n\s*/g, ' ⏎ ').slice(0, 160)
+  } else {
+    what = name
+  }
+  return { what, lines }
+}
 
 async function approve(name, args) {
-  if (auto) return true
+  if (auto || always.has(name)) return true
   if (!process.stdin.isTTY) return false // pipes: deny unless --auto
   spinClear() // erase the spinner before the question takes the line
-  const what =
-    name === 'write_file'
-      ? `write ${args.path} (${String(args.content ?? '').split('\n').length} lines)`
-      : name === 'run_command'
-        ? String(args.command)
-        : name
+  const { what, lines } = approvalView(name, args)
+  for (const l of lines) console.log(l) // preview rows above the question
   awaitingApproval = true
   try {
-    const answer = await question(`${yellow('⚠ approve')} ${name}: ${dim(what.slice(0, 120))} ? [y/N] `)
-    return /^(y|yes)$/i.test(answer.trim())
+    const answer = await question(`${yellow('⚠ approve')} ${name}: ${dim(what.slice(0, 120))} ? [y/N${always.has(name) ? '' : ' · a=always'}] `)
+    const a = answer.trim()
+    if (/^a$/i.test(a)) {
+      always.add(name)
+      return true
+    }
+    return /^(y|yes)$/i.test(a)
   } finally {
     awaitingApproval = false
     if (rl) {
@@ -213,6 +375,16 @@ async function approve(name, args) {
 // -- tool activity (the injected onEvent half) -------------------------------------
 
 function onEvent(ev) {
+  if (ev.type === 'retry') {
+    // transient model-call hiccup — say it out loud instead of a silent pause
+    if (PRINT && FMT === 'stream-json') {
+      console.log(JSON.stringify({ type: 'retry', attempt: ev.attempt, max: ev.max, error: String(ev.error ?? '').slice(0, 200) }))
+      return
+    }
+    const write = PRINT ? console.error : console.log
+    write(`  ${dim('↻')} ${dim(`model call failed (${String(ev.error ?? '').slice(0, 60)}) — retry ${ev.attempt}/${ev.max}`)}`)
+    return
+  }
   if (ev.type !== 'tool') return
   spinClear() // the ⎿ line starts on a clean line, spinner redraws below it
   const argStr =
@@ -328,12 +500,25 @@ async function turn(prompt) {
   }
   if (mcp?.total) Object.assign(registry, mcp.entries)
 
+  // long chains collapse on their own (manual: /compact) — before the window
+  // bloats, not after the model starts losing the plot
+  if (history.length > 60 && !compacting) {
+    try {
+      await compactHistory(false)
+    } catch (e) {
+      console.log(dim(`auto-compact skipped: ${e?.message ?? e}`))
+    }
+  }
+
   const messages = [
     { role: 'system', content: SYSTEM },
     ...history,
     { role: 'user', content: prompt }
   ]
 
+  interrupted = false // fresh turn: ctrl+c interrupts THIS chain instead of quitting
+  const ctl = new AbortController()
+  abortCtl = ctl
   try {
     let result
     try {
@@ -345,20 +530,32 @@ async function turn(prompt) {
         approve,
         onEvent,
         callModel: call,
-        hooks: loadHooks(roots)
+        hooks: loadHooks(roots),
+        signal: ctl.signal
       })
     } finally {
       spinStop() // output takes over from here
+      abortCtl = null
     }
 
     history = result.messages // keep the chain: stateful across turns
+    addUsage(result.usage)
+    autosave() // every finished (or stopped) chain lands on disk immediately
 
     if (result.status === 'limit') {
       console.log(red(`stopped after ${result.iterations} tool steps (iteration cap)`))
     }
+    if (result.status === 'stopped') {
+      console.log(dim(`⏹ stopped — ${result.iterations} step(s) kept, chain saved`))
+    }
     if (result.text) console.log(`\n${renderMd(result.text, process.stdout.columns || 80)}\n`)
-    else if (result.status !== 'limit') console.log(dim('(no reply text)'))
+    else if (result.status !== 'limit' && result.status !== 'stopped') console.log(dim('(no reply text)'))
   } catch (e) {
+    if (e?.name === 'AbortError' || ctl.signal.aborted) {
+      console.log(dim('⏹ stopped'))
+      autosave() // keep whatever the chain already did
+      return
+    }
     console.log(red(`error: ${e?.message ?? e}`))
     if (String(e?.message ?? '').includes('ECONNREFUSED')) {
       console.log(dim(`is Ollama running? try: ollama serve  (${URL})`))
@@ -485,6 +682,44 @@ async function command(line) {
       }
       return true
     }
+    case '/compact':
+      await compactHistory(true)
+      return true
+    case '/resume': {
+      const saves = listAgentSaves()
+      if (!arg) {
+        if (!saves.length) {
+          console.log(dim(`no saved agent sessions in ${AGENT_DIR}`))
+        } else {
+          console.log(dim('agent sessions · newest first · /resume <n> restores'))
+          saves.slice(0, 8).forEach((s, i) => {
+            const d = new Date(s.savedAt ?? 0)
+            const when =
+              `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ` +
+              `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+            console.log(`  ${bold(String(i + 1))} ${s.title ?? 'untitled'} ${dim(`· ${(s.history ?? []).length} msgs · ${when} · ${s.id}`)}`)
+          })
+        }
+        return true
+      }
+      const pick = arg.trim()
+      const s = saves.find((x) => x.id === pick) ?? (/^\d+$/.test(pick) ? saves[Number(pick) - 1] : null)
+      if (!s) {
+        console.log(red(`no saved session matching "${pick}"`))
+        return true
+      }
+      resumeSave(s)
+      console.log(dim(`resumed "${saveTitle}" — ${history.length} messages · workspace ${roots.join(', ')}`))
+      return true
+    }
+    case '/usage':
+      console.log(
+        dim(
+          `usage · ${sessionUsage.promptTokens} prompt + ${sessionUsage.completionTokens} completion tokens · ` +
+            `${sessionUsage.calls} model call(s) · ctx ${CTX}${auto ? ' · auto-approve on' : ''}`
+        )
+      )
+      return true
     case '/mcp': {
       const all = (settings.mcpServers ?? []).filter((s) => s && s.name && s.command)
       if (!all.length) {
@@ -585,6 +820,9 @@ async function command(line) {
           `  /tools       every tool the agent can call (incl. MCP)`,
           `  /auto [on|off]  toggle auto-approval of gated tools`,
           `  /export [f]  save the conversation to markdown`,
+          `  /compact     summarize older messages to free context (auto past 60)`,
+          `  /resume [n]  list / restore saved agent sessions (autosaved each turn)`,
+          `  /usage       tokens used in this session`,
           `  /clear       forget the conversation chain`,
           `  /exit        quit`,
           `  model        ${MODEL}  (${URL})`,
@@ -662,6 +900,28 @@ wire?.on('close', () => {
   cmdChain.then(() => {
     if (!busy) finish()
   })
+})
+
+// -- ctrl+c: interrupt the chain, don't lose it ---------------------------------
+// Once DURING a run → abort the model call: every completed tool result stays
+// in history and the save lands (runAgent returns status "stopped"). A second
+// press while it unwinds → quit. During an approval question → quit (that
+// question owns the line, same as it always did). Idle → clean exit with the
+// MCP server children disconnected.
+let abortCtl = null
+let interrupted = false
+wire?.on('SIGINT', () => {
+  if (awaitingApproval) return finish()
+  if (abortCtl && !interrupted) {
+    interrupted = true
+    spinClear()
+    abortCtl.abort()
+    console.log(dim('⏹ stopping — ctrl+c again quits'))
+    return
+  }
+  if (abortCtl) return finish()
+  console.log(dim('bye'))
+  finish()
 })
 
 // -- one-shot print entry (claude -p / codex exec shape) -------------------------
