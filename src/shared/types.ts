@@ -80,6 +80,10 @@ export interface ProviderConfig {
  * midnight/ember/mint/slate are accent palettes (the terminal /theme names).
  */
 export type ThemeName =
+  | 'graphite'
+  | 'paper'
+  | 'contrast'
+  // legacy (accepted forever)
   | 'dark'
   | 'light'
   | 'acrylic'
@@ -125,12 +129,36 @@ export interface Settings {
   notifyDone?: boolean
   /** true = Enter sends / Shift+Enter new line; false = Ctrl+Enter sends / Enter new line. */
   enterSends?: boolean
+  /** QoL: closing the window hides CODEZY in the tray instead of quitting. */
+  minimizeToTray?: boolean
+  /** QoL: start CODEZY automatically when the user logs in (OS login item). */
+  openAtLogin?: boolean
+  /** QoL: keep the window above other windows. */
+  alwaysOnTop?: boolean
+  /** QoL: with the tray on, launch at login WITHOUT showing the window. */
+  startHidden?: boolean
+  /** QoL: remembered Chromium zoom level (Ctrl/Cmd +,-,0 changes it). */
+  zoomLevel?: number
+  /** CLI dual-model roles: the cheap model for summaries + /scout runs.
+   *  The app ignores this field — the terminal agent owns it. */
+  fastModel?: string
+  /** Thinking mode (long mode) — the app's Thinking button and the CLI's
+   *  /thinking both read/write it: reason-first prompting + deeper budget. */
+  thinkingMode?: boolean
+  /** Web mode for the NORMAL chat (which has no tools): 'auto' searches
+   *  when the question is about something current, 'always' searches every
+   *  turn, 'off' never does. The CLI's /search and the agent's web_search
+   *  tool work regardless of this. */
+  webSearch?: 'auto' | 'always' | 'off'
   /**
    * Agent mode (v2) — the model calls files/commands itself through the
-   * shared harness (cli/lib/harness.mjs), with a per-action approval dialog.
+   * shared harness (codezy-cli/lib/harness.mjs), with a per-action approval dialog.
    * Needs a linked folder. Off = the classic v1 edit-block flow.
    */
   v2?: boolean
+  /** One-time 3.1.5 migration marker: agent mode used to be a buried opt-in,
+   *  so folder-linked chats ran without tools. Absent = migrate to on. */
+  agentModeMigrated?: boolean
   /** false/absent = show the first-run setup screen; true = finished
    *  (rerunnable any time from the Settings dialog). */
   setupDone?: boolean
@@ -140,6 +168,9 @@ export interface Settings {
   autoContinue?: boolean
   /** UI density: cozy (default) or compact (tighter rows/padding). */
   density?: 'cozy' | 'compact'
+  /** false/absent = simple UI: core commands and controls only.
+   *  true = every pane, action, command and developer control. */
+  showAdvanced?: boolean
   /** false = never check GitHub for a newer CODEZY on launch (default true). */
   autoUpdate?: boolean
   /**
@@ -180,6 +211,10 @@ export type ChatEvent =
   | { type: 'error'; message: string }
   | { type: 'aborted' }
   | { type: 'v2tool'; iteration: number; name: string; args: Record<string, unknown>; outcome: V2Outcome }
+  | { type: 'v2step'; iteration: number; phase: 'thinking' | 'running'; name: string; args?: Record<string, unknown> }
+  | { type: 'websearch'; query: string; results: number; pages: number }
+  | { type: 'notice'; text: string; kind?: 'info' | 'error' }
+  | { type: 'previewreload' }
   | { type: 'v2ask'; askId: number; name: string; args: Record<string, unknown> }
 
 export type ConnectionStatus = 'checking' | 'online' | 'offline'

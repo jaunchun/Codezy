@@ -326,6 +326,14 @@ export default function ModelPicker() {
             </div>
           )}
 
+          {/* a non-tool model cannot run agent mode — say it BEFORE the pick */}
+          {active && active.tools === false && settings?.v2 && (session?.linkedFolders?.length ?? 0) > 0 && (
+            <div className="picker-warn" role="note">
+              <b>{active.id}</b> can’t call tools. Agent mode will fall back to edit blocks — pick a model
+              marked <b>tools</b> for read / search / write.
+            </div>
+          )}
+
           <div className="picker-list">
             {rows.map((row) =>
               row.kind === 'head' ? (
@@ -367,6 +375,18 @@ export default function ModelPicker() {
                   {row.model.parameter || row.model.family ? (
                     <span className="pi-badge">{row.model.parameter || row.model.family}</span>
                   ) : null}
+                  {row.model.tools === false ? (
+                    <span
+                      className="pi-badge no-tools"
+                      title="This model cannot call tools — agent mode will fall back to edit blocks"
+                    >
+                      chat only
+                    </span>
+                  ) : row.model.tools === true ? (
+                    <span className="pi-badge tools" title="Supports tool calling — agent mode can read, search and write">
+                      tools
+                    </span>
+                  ) : null}
                   {row.model.id === effModel && row.model.provider === effProvider ? (
                     <span className="pi-use current">Current</span>
                   ) : (
@@ -390,6 +410,7 @@ export default function ModelPicker() {
             {session
               ? `${s.models.length} models · pick applies to this chat · settings = default for new chats`
               : `${s.models.length} models · local + connected · ↑↓ Enter`}
+            {' · tools = read / search / write'}
             {favs.length ? ` · ★ ${favs.length}` : ''}
           </div>
         </div>

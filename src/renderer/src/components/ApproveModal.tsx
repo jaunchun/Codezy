@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useApp } from '../store/app'
+import { useFocusTrap } from '../lib/useFocusTrap'
 import { changeCounts, type ParsedEdit } from '../../../shared/edits'
 import { DiffFile } from './EditCard'
 
@@ -17,19 +18,9 @@ export default function ApproveModal() {
   const ask = useApp((s) => s.v2Ask)
   const answer = useApp((s) => s.answerV2)
   const [current, setCurrent] = useState<{ text: string | null; loaded: boolean }>({ text: null, loaded: false })
-
-  // Escape = deny while the dialog is up
-  useEffect(() => {
-    if (!ask) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        useApp.getState().answerV2(false)
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [ask])
+  const modalRef = useRef<HTMLDivElement>(null)
+  const approveRef = useRef<HTMLButtonElement>(null)
+  useFocusTrap(!!ask, modalRef, () => useApp.getState().answerV2(false), approveRef)
 
   // write_file: fetch the CURRENT content so the diff shows the real delta
   useEffect(() => {
@@ -92,7 +83,7 @@ export default function ApproveModal() {
 
   return (
     <div className="overlay approve-overlay">
-      <div className="modal approve-modal" role="dialog" aria-modal="true" aria-label="Approve tool action">
+      <div className="modal approve-modal" ref={modalRef} role="dialog" aria-modal="true" aria-label="Approve tool action">
         <h2>
           CODEZY wants to {describe}
           <span className="approve-badge">agent mode</span>
@@ -127,7 +118,7 @@ export default function ApproveModal() {
           <button className="btn ghost" onClick={() => answer(false)}>
             Deny
           </button>
-          <button className="btn primary" autoFocus onClick={() => answer(true)}>
+          <button className="btn primary" ref={approveRef} autoFocus onClick={() => answer(true)}>
             Approve
           </button>
         </div>

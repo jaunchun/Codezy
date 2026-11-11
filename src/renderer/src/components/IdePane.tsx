@@ -273,6 +273,7 @@ export default function IdePane() {
     >()
   )
   const lastSid = useRef<string | null>(null)
+  const revealNonce = useRef(0)
   const [aiActive, setAiActive] = useState(false)
   const [ov, setOv] = useState<{ x: number; y: number; h: number } | null>(null)
   const charW = useRef(0)
@@ -359,6 +360,71 @@ export default function IdePane() {
     lastSid.current = s.activeId
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs per chat switch only
   }, [s.activeId])
+
+  // Find in files → open the hit in this pane, select the match and scroll
+  // the line into view. The nonce lets the same hit be re-opened on purpose.
+  useEffect(() => {
+    const req = s.ideReveal
+    if (!open || !req || !s.activeId || req.nonce === revealNonce.current) return
+    revealNonce.current = req.nonce
+    if (curPath && curPath !== req.path && !imgSrc && content !== saved) {
+      if (!window.confirm(`Discard unsaved changes in ${curName}?`)) return
+    }
+    let alive = true
+    void (async () => {
+      const res = await window.codezy.ide.read(s.activeId!, req.path)
+      if (!alive) return
+      if (res == null) {
+        s.addNotice(`Cannot read ${req.path.split(/[\\/]/).pop() ?? req.path}`, 'error')
+        return
+      }
+      // make every parent folder visible in the tree
+      const sep = req.path.includes('\\') ? '\\' : '/'
+      setOpenDirs((prev) => {
+        const next = new Set(prev)
+        for (const root of roots) {
+          const base = root.replace(/[\\/]+$/, '')
+          if (!req.path.startsWith(base + sep) && !req.path.startsWith(base + '/')) continue
+          const rest = req.path.slice(base.length + 1).split(/[\\/]/)
+          let acc = base
+          for (let i = 0; i < rest.length - 1; i++) {
+            acc += sep + rest[i]
+            next.add(acc)
+          }
+        }
+        return next
+      })
+      setCurPath(req.path)
+      setCurName(req.path.split(/[\\/]/).pop() ?? req.path)
+      setImgSrc(null)
+      setTruncated(res.truncated)
+      setContent(res.content)
+      setSaved(res.content)
+      requestAnimationFrame(() => {
+        const el = ta.current
+        if (!el) return
+        // use the textarea's own value: the DOM normalizes CRLF to LF, so
+        // offsets derived from res.content would drift by one per CRLF line
+        const text = el.value
+        const lines = text.split('\n')
+        let pos = 0
+        for (let i = 0; i < req.line - 1 && i < lines.length; i++) pos += lines[i].length + 1
+        const lineText = lines[req.line - 1] ?? ''
+        const col = Math.min(Math.max(0, req.column - 1), lineText.length)
+        pos = Math.min(pos + col, text.length)
+        el.focus()
+        el.setSelectionRange(pos, Math.min(pos + Math.max(1, req.length), text.length))
+        const lh = parseFloat(getComputedStyle(el).lineHeight) || 18
+        el.scrollTop = Math.max(0, (req.line - 6) * lh)
+        if (gutter.current) gutter.current.scrollTop = el.scrollTop
+        setCaret({ line: req.line, col: col + 1 })
+      })
+    })()
+    return () => {
+      alive = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one reveal per nonce
+  }, [open, s.ideReveal, s.activeId])
 
   // the file open in cowork mirrors into the store on every change (unsaved
   // edits included) — the composer attaches it so the model actually knows

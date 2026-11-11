@@ -165,21 +165,30 @@ function seedSkills(): void {
 // -- settings ---------------------------------------------------------------
 
 export const DEFAULT_SETTINGS: Settings = {
-  theme: 'acrylic',
-  accent: '#3d9bff',
+  theme: 'graphite',
+  accent: '#6FA8FF',
   dataDir: DEFAULT_DATA_DIR,
   driveFolder: null,
   ollamaUrl: 'http://127.0.0.1:11434',
   providers: [],
   activeProvider: 'ollama',
   activeModel: 'qwen2.5-coder:7b',
+  /** CLI dual-model roles — cheap model for compaction + /scout (app ignores). */
+  fastModel: '',
+  /** Thinking mode (long mode) — the Thinking button's persisted state. */
+  thinkingMode: false,
+  /** Web mode for the normal chat: 'auto' | 'always' | 'off'. */
+  webSearch: 'auto',
   effort: 'medium',
   userName: '',
   learn: true,
   fontSize: 14,
   mode: 'build',
-  /** agent mode (v2 harness) — off keeps the classic edit-block flow */
-  v2: false,
+  /** agent mode (v2 harness) — ON by default: a linked folder IS the agent's
+   *  workspace. Off keeps the classic edit-block flow. */
+  v2: true,
+  /** 3.1.5 migration marker (see getSettings). */
+  agentModeMigrated: true,
   /** OS notification when a reply finishes while the window is unfocused */
   notifyDone: false,
   /** Enter sends (true) vs Ctrl+Enter sends (false) */
@@ -192,14 +201,42 @@ export const DEFAULT_SETTINGS: Settings = {
   autoContinue: true,
   /** row/padding density of the interface */
   density: 'cozy',
+  /** false = simple UI; true = every pane, command and developer control */
+  showAdvanced: false,
   /** check GitHub for a newer CODEZY on launch (the quiet title-bar pill) */
   autoUpdate: true,
+  /** keep the window above other windows (coding alongside a chat) */
+  alwaysOnTop: false,
+  /** with the tray on: launch CODEZY hidden at login (no window flash) */
+  startHidden: false,
   /** MCP servers (v3) — none until the user adds one in Settings */
   mcpServers: []
 }
 
 export function getSettings(): Settings {
-  return readJson<Settings>(p.settings(), DEFAULT_SETTINGS)
+  // 3.1.5 migration: agent mode used to be a buried Settings opt-in, so a
+  // folder-linked chat still ran the NO-TOOLS flow — the model got a file
+  // tree but could not read a file, search the web or edit anything, and
+  // answered with suggestions. Flip it on ONCE for existing settings (the
+  // toggle still turns it off afterwards).
+  let hadMarker = true
+  try {
+    const raw = JSON.parse(fs.readFileSync(p.settings(), 'utf8')) as { agentModeMigrated?: boolean }
+    hadMarker = raw.agentModeMigrated === true
+  } catch {
+    /* no settings file yet — defaults already have agent mode on */
+  }
+  const s = readJson<Settings>(p.settings(), DEFAULT_SETTINGS)
+  if (!hadMarker) {
+    s.v2 = true
+    s.agentModeMigrated = true
+    try {
+      writeJson(p.settings(), s)
+    } catch {
+      /* read-only settings dir — the in-memory flip still applies this run */
+    }
+  }
+  return s
 }
 
 export function saveSettings(s: Settings): Settings {

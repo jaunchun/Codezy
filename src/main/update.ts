@@ -8,10 +8,20 @@
 // replaces the running app — one install, no second version, no separate
 // updater program, no second window.
 //
-// The release tag is literally "Release" (not semver), so the real version
-// comes from the asset file name: CODEZY-Setup-<x.y.z>.exe. Everything the
-// tests need is exported as a pure helper; the network functions accept an
-// injected fetch so batch21 never touches GitHub.
+// The version comes from the asset file name (CODEZY-Setup-<x.y.z>.exe).
+// Old releases used the prose tag "Release", so a tag is only trusted when
+// it IS a version ("3.1.6" / "v3.1.6") — newer releases ship a bare
+// CODEZY-Setup.exe, and without that fallback their update stays invisible.
+// Everything the tests need is exported as a pure helper; the network
+// functions accept an injected fetch so batch21 never touches GitHub.
+//
+// Every helper is PLATFORM-AWARE (optional `platform` param defaulting to
+// the running platform): Windows matches .exe, macOS .dmg/.zip, Linux
+// .AppImage/.deb/.rpm/.tar.gz — so a mac/linux box never offers or spawns a
+// Windows installer, and future mac/linux release assets light up with no
+// further code changes. Off Windows the in-place install is impossible
+// (NSIS is Windows-only): apply refuses cleanly and main hands the release
+// page to the OS browser instead.
 // ---------------------------------------------------------------------------
 
 import { spawn } from 'child_process'
@@ -23,9 +33,19 @@ import type { UpdateCheck, UpdateProgress, UpdateRelease } from '../shared/api'
 export const UPDATE_REPO = 'jaunchun/Codezy'
 
 /** Asset file name → version. `CODEZY-Setup-2.6.0.exe` → `2.6.0` (null when
- *  the name doesn't carry one — the tag is prose here, never trust it). */
+ *  the name doesn't carry one — the release tag may still supply it). */
 export function parseVersion(name: string): string | null {
   const m = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(name))
+  if (!m) return null
+  return `${m[1]}.${m[2]}.${m[3] ?? '0'}`
+}
+
+/** Release tag → version, only when the tag IS a version (`3.1.6`,
+ *  `v3.1.6`). Older CODEZY tags were prose ("Release") — never guess from
+ *  those. */
+export function parseTagVersion(tag: unknown): string | null {
+  if (typeof tag !== 'string') return null
+  const m = /^v?(\d+)\.(\d+)(?:\.(\d+))?$/.exec(tag.trim())
   if (!m) return null
   return `${m[1]}.${m[2]}.${m[3] ?? '0'}`
 }
@@ -45,43 +65,75 @@ export function isNewerVersion(a: string, b: string): boolean {
   return compareVersions(a, b) > 0
 }
 
-/** Picks the newest CODEZY setup asset from one GitHub release (null when
- *  the release carries none — a tag without an installer isn't an update). */
-export function pickAsset(assets: unknown): UpdateRelease | null {
+/** Which installer file each platform ships. Anything unrecognised keeps the
+ *  Windows rules — CODEZY has shipped Windows installers since v2.6 and an
+ *  unknown platform must never claim an installer it can't run. */
+export function installerPattern(platform: string): RegExp {
+  if (platform === 'darwin') return /\.(dmg|zip)$/i
+  if (platform === 'linux') return /\.(appimage|deb|rpm|tar\.gz)$/i
+  return /\.exe$/i
+}
+
+/** Picks the newest CODEZY installer for THIS PLATFORM from one GitHub
+ *  release (null when the release carries none — a tag without a matching
+ *  installer isn't an update). A versioned file name always wins; when the
+ *  release has no versioned installer, `tagVersion` labels the plain
+ *  CODEZY-Setup.exe asset. */
+export function pickAsset(
+  assets: unknown,
+  platform: string = process.platform,
+  tagVersion: string | null = null
+): UpdateRelease | null {
   if (!Array.isArray(assets)) return null
+  const pattern = installerPattern(platform)
   let best: UpdateRelease | null = null
+  let plain: UpdateRelease | null = null
   for (const raw of assets) {
     const a = raw as { name?: unknown; browser_download_url?: unknown; size?: unknown }
     if (!a || typeof a.name !== 'string') continue
-    if (!/\.exe$/i.test(a.name)) continue
-    const version = parseVersion(a.name)
-    if (!version) continue
+    if (!pattern.test(a.name)) continue
     const url = typeof a.browser_download_url === 'string' ? a.browser_download_url : ''
     if (!url) continue
+    const named = parseVersion(a.name)
+    if (!named) {
+      // No version in the file name: only the release tag can identify it,
+      // and only as a fallback behind real versioned assets.
+      if (tagVersion && !plain) {
+        plain = { version: tagVersion, name: a.name, url, size: typeof a.size === 'number' ? a.size : 0 }
+      }
+      continue
+    }
     const cand: UpdateRelease = {
-      version,
+      version: named,
       name: a.name,
       url,
       size: typeof a.size === 'number' ? a.size : 0
     }
     if (!best || isNewerVersion(cand.version, best.version)) best = cand
   }
-  return best
+  return best ?? plain
 }
 
 /** Full check result from the releases payload + the running version.
  *  Pure: drafts are skipped, the highest setup asset wins, and a release
  *  older-or-equal to `current` reports `available: false` (never a "downgrade
  *  pill" when GitHub is behind a local dev build). */
-export function evaluateReleases(payload: unknown, current: string): UpdateCheck {
+export function evaluateReleases(payload: unknown, current: string, platform: string = process.platform): UpdateCheck {
   const out: UpdateCheck = { ok: true, current, available: false, release: null }
   if (!Array.isArray(payload)) return out
   let best: UpdateRelease | null = null
   for (const raw of payload) {
-    const rel = raw as { draft?: unknown; prerelease?: unknown; html_url?: unknown; body?: unknown; assets?: unknown }
+    const rel = raw as {
+      draft?: unknown
+      prerelease?: unknown
+      html_url?: unknown
+      body?: unknown
+      tag_name?: unknown
+      assets?: unknown
+    }
     if (!rel || typeof rel !== 'object') continue
     if (rel.draft === true || rel.prerelease === true) continue
-    const pick = pickAsset(rel.assets)
+    const pick = pickAsset(rel.assets, platform, parseTagVersion(rel.tag_name))
     if (!pick) continue
     pick.notes = typeof rel.body === 'string' ? rel.body.slice(0, 400) : ''
     pick.page = typeof rel.html_url === 'string' ? rel.html_url : ''
@@ -101,7 +153,8 @@ export function evaluateReleases(payload: unknown, current: string): UpdateCheck
  *  check you never see must never disturb the app. */
 export async function checkForUpdates(
   current: string,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = fetch,
+  platform: string = process.platform
 ): Promise<UpdateCheck> {
   try {
     const res = await fetchImpl(
@@ -117,7 +170,7 @@ export async function checkForUpdates(
     if (!res.ok) {
       return { ok: false, current, available: false, release: null, error: `GitHub responded ${res.status}` }
     }
-    return evaluateReleases(await res.json(), current)
+    return evaluateReleases(await res.json(), current, platform)
   } catch (e) {
     return {
       ok: false,
@@ -131,8 +184,11 @@ export async function checkForUpdates(
 
 // -- download ----------------------------------------------------------------
 
-/** Streams the setup EXE into `dir` and reports progress. Returns the file
- *  path, or an error string — the caller never guesses. */
+/** Streams the installer into `dir` and reports progress. The file keeps the
+ *  asset's own extension (the URL path IS the release file name), so a
+ *  .dmg/.AppImage download is recognisable for what it is; unparsable URLs
+ *  fall back to the classic Windows name. Returns the file path, or an error
+ *  string — the caller never guesses. */
 export async function downloadUpdate(
   url: string,
   dir: string,
@@ -149,7 +205,13 @@ export async function downloadUpdate(
     if (!res.ok || !res.body) return { error: `download failed (HTTP ${res.status})` }
 
     const total = Number(res.headers.get('content-length')) || 0
-    const dest = path.join(dir, `CODEZY-update.exe`)
+    let ext = '.exe'
+    try {
+      ext = path.extname(new URL(url).pathname) || '.exe'
+    } catch {
+      /* unparsable url → keep the classic Windows name */
+    }
+    const dest = path.join(dir, `CODEZY-update${ext}`)
     const tmp = `${dest}.part`
     const out = fs.createWriteStream(tmp)
     const reader = res.body.getReader()
@@ -191,12 +253,21 @@ export async function downloadUpdate(
  *  upgrade), `/S` (silent — no window steals focus), `--force-run` (relaunch
  *  the new version when done). NSIS reads the old InstallLocation from the
  *  registry, so the files are replaced in the SAME folder — in place.
- *  Detached + unref'd: the app quits while the installer keeps going. */
-export function applyUpdate(setupPath: string): Promise<{ ok: boolean; error?: string }> {
+ *  Detached + unref'd: the app quits while the installer keeps going.
+ *  Off Windows there IS no installer to launch: refuses cleanly (`ok:false`)
+ *  so the caller can open the release page instead of spawning garbage. */
+export function applyUpdate(
+  setupPath: string,
+  platform: string = process.platform
+): Promise<{ ok: boolean; error?: string }> {
   return new Promise((resolve) => {
     try {
       if (!fs.existsSync(setupPath)) {
         resolve({ ok: false, error: 'update file is gone' })
+        return
+      }
+      if (platform !== 'win32') {
+        resolve({ ok: false, error: 'auto-install is Windows-only — install from the release page' })
         return
       }
       const child = spawn(setupPath, ['--updated', '/S', '--force-run'], {

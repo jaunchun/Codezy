@@ -4,7 +4,7 @@
 // this file in the main process: it pings Ollama, lists models, and streams
 // chat tokens from either Ollama or any OpenAI-compatible API.
 // ---------------------------------------------------------------------------
-
+// i dont have any idea on what im doing
 import type { ChatMessage, ProviderConfig } from '../shared/types'
 
 export interface ModelEntry {
@@ -79,9 +79,47 @@ export async function listOllamaModelDetails(
   }
 }
 
+/**
+ * What a model can do, per Ollama's /api/show: `completion`, `tools`,
+ * `insert`, `vision`, … Cached per baseUrl+model. `null` means the engine did
+ * not answer (old Ollama, offline): callers must fail OPEN and try the tools
+ * path — the run loop still has the "does not support tools" retry.
+ */
+const capabilityCache = new Map<string, string[] | null>()
+
+export async function modelCapabilities(baseUrl: string, model: string): Promise<string[] | null> {
+  const key = `${baseUrl.replace(/\/$/, '')}|${model}`
+  if (capabilityCache.has(key)) return capabilityCache.get(key) ?? null
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/show`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model }),
+      signal: AbortSignal.timeout(4000)
+    })
+    if (!res.ok) {
+      capabilityCache.set(key, null)
+      return null
+    }
+    const data = (await res.json()) as { capabilities?: unknown }
+    const caps = Array.isArray(data.capabilities)
+      ? data.capabilities.filter((c): c is string => typeof c === 'string')
+      : null
+    capabilityCache.set(key, caps)
+    return caps
+  } catch {
+    capabilityCache.set(key, null)
+    return null
+  }
+}
+
+/** Unknown capabilities fail open (the retry in chat:send catches a 400). */
+export function modelSupportsTools(caps: string[] | null): boolean {
+  return caps === null || caps.includes('tools')
+}
+
 /** Best-effort model list for the OpenAI-style picker: the saved provider
- *  config plus a GET /models when the endpoint supports it. */
-export async function listOpenAIModels(provider: ProviderConfig): Promise<string[]> {
+ *  config plus a GET /models when the endpoint supports it. */export async function listOpenAIModels(provider: ProviderConfig): Promise<string[]> {
   try {
     const res = await fetch(`${provider.baseUrl.replace(/\/$/, '')}/models`, {
       headers: provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {},

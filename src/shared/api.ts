@@ -55,6 +55,9 @@ export interface ModelEntry {
   quant?: string // Q4_K_M, Q8_0, …
   family?: string // qwen2, llama, …
   parameter?: string // 7B, 8x7B, …
+  /** Can the model call tools? Agent mode needs true. `undefined` = unknown
+   *  (a cloud endpoint whose capabilities we did not probe). */
+  tools?: boolean
 }
 
 export interface CodezyApi {
@@ -120,6 +123,16 @@ export interface CodezyApi {
     /** DuckDuckGo results (no API key) for /search. */
     query(q: string): Promise<SearchHit[]>
   }
+  preview: {
+    /** The .html files under the chat's linked folders — the live preview's pages. */
+    files(sessionId: string): Promise<{ path: string; name: string }[]>
+    /** The page to open by default (index.html, else the first .html). */
+    default(sessionId: string): Promise<string>
+    /** Start the live-reload watcher on the folder (the preview is open). */
+    watch(sessionId: string): Promise<boolean>
+    /** Stop the watcher (the preview closed). */
+    unwatch(sessionId: string): Promise<boolean>
+  }
   git: {
     /** /diff: git status + unified diff vs HEAD in the chat's linked folder. */
     diff(sessionId: string, pathspec?: string): Promise<GitDiff>
@@ -129,6 +142,8 @@ export interface CodezyApi {
   files: {
     /** @mention: files under the chat's linked folders matching a query. */
     list(sessionId: string, query: string): Promise<FileRef[]>
+    /** Find in files: literal, case-insensitive content search across the linked folders. */
+    search(sessionId: string, query: string): Promise<FileSearchResult>
     /** Reads a linked-folder file for an @mention — null when outside the folders. */
     read(sessionId: string, path: string): Promise<string | null>
     /** Drag & drop: reads dropped files / classifies dropped folders, capped. */
@@ -186,7 +201,12 @@ export interface CodezyApi {
     version(): Promise<string>
     openExternal(url: string): Promise<void>
     /** Opens the external terminal REPL. Resolves to an error message, or null on success. */
-    openTerminal(): Promise<string | null>
+    /** Opens the terminal agent — in the chat's folder when there is one. */
+    openTerminal(sessionId?: string): Promise<string | null>
+    /** Reveals the logs folder. Resolves to '' on success, or an error message. */
+    openLogs(): Promise<string>
+    /** Boots Ollama on demand (the offline sidebar dot). Resolves `{ ok }`. */
+    startOllama(): Promise<{ ok: boolean }>
   }
   /** Built-in GitHub updater (v2.6) — check, download, restart in place. */
   update: {
@@ -272,6 +292,32 @@ export interface FileRef {
   name: string
 }
 
+/** One project-wide content match (Find in files). */
+export interface FileSearchHit {
+  /** Absolute path — opens in the cowork editor. */
+  path: string
+  /** Path relative to its linked folder. */
+  name: string
+  /** 1-based line number. */
+  line: number
+  /** 1-based column of the match in the real line — the editor selection. */
+  column: number
+  /** 1-based column of the match inside the trimmed `text` preview. */
+  previewColumn: number
+  /** Match length in characters (the editor selects exactly this much). */
+  length: number
+  /** Trimmed line excerpt around the match. */
+  text: string
+}
+
+export interface FileSearchResult {
+  hits: FileSearchHit[]
+  /** Files whose contents were read. */
+  scanned: number
+  /** A cap stopped the walk — results are a prefix, not the whole project. */
+  truncated: boolean
+}
+
 /** Result of dropping files onto the composer. */
 export interface DroppedImport {
   files: { path: string; content: string }[]
@@ -300,7 +346,8 @@ export interface GitStatus {
 
 /** The GitHub release that carries a newer setup than the running version. */
 export interface UpdateRelease {
-  /** Parsed from the asset name — the tag is prose ("Release"), never semver. */
+  /** From the asset file name, or from a semver release tag when the asset
+   *  itself carries no version (newer releases ship a bare CODEZY-Setup.exe). */
   version: string
   /** Asset file name, e.g. `CODEZY-Setup-2.6.0.exe`. */
   name: string

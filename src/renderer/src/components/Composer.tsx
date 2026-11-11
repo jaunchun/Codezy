@@ -31,6 +31,7 @@ const MODES: { id: 'plan' | 'build' | 'auto'; label: string; title: string }[] =
 
 export default function Composer() {
   const s = useApp()
+  const advanced = s.settings?.showAdvanced === true
   const [text, setText] = useState('')
   const [files, setFiles] = useState<Attachment[]>([])
   const [cmdIdx, setCmdIdx] = useState(0)
@@ -53,6 +54,7 @@ export default function Composer() {
   // context meter: rough tokens for this conversation — a plain usage
   // counter, no denominator: local models are not artificially capped
   const effort = session?.effort ?? s.settings?.effort ?? 'medium'
+  const webMode = s.settings?.webSearch ?? 'auto'
   const ctxUsed = Math.round((session?.messages.reduce((n, m) => n + m.content.length, 0) ?? 0) / 4)
   const fmtTok = (n: number) => (n < 1000 ? String(n) : `${(n / 1000).toFixed(1)}k`)
 
@@ -685,6 +687,44 @@ export default function Composer() {
             </button>
           )}
 
+          {advanced && (
+          <>
+          {/* thinking — the long-mode switch: reason-first prompting, careful
+              sampling and a bigger agent step budget. Persists via
+              settings.thinkingMode, which main reads on every chat:send. */}
+          <button
+            className={`chip thinking-chip${s.thinking ? ' on' : ''}`}
+            data-tip={
+              s.thinking
+                ? 'Thinking is on — deeper, slower answers for hard problems (click to turn off)'
+                : 'Thinking — long mode: deeper, slower, better for hard problems'
+            }
+            onClick={() => s.setThinking(!s.thinking)}
+          >
+            thinking
+          </button>
+
+          {/* web — the normal chat has NO tools, so the app searches FOR the
+              model. auto = only when the question is about something current,
+              always = every turn, off = never. The agent's web_search tool
+              and the CLI's /search work regardless. */}
+          <button
+            className={`chip web-chip${webMode === 'off' ? '' : ' on'}`}
+            data-tip={
+              webMode === 'auto'
+                ? 'Web: auto — the app searches when your question is about something current'
+                : webMode === 'always'
+                  ? 'Web: always — every message is searched before the answer (click to turn off)'
+                  : 'Web off — no automatic searching (click to turn auto back on)'
+            }
+            onClick={() => {
+              const next = webMode === 'auto' ? 'always' : webMode === 'always' ? 'off' : 'auto'
+              void s.updateSettings({ webSearch: next })
+            }}
+          >
+            web<span className="web-mode">{webMode === 'always' ? 'always' : webMode === 'off' ? 'off' : 'auto'}</span>
+          </button>
+
           {/* effort — circle badge "E"; hover previews, click latches open */}
           <div
             className={`seg-fab${segPinned === 'effort' ? ' pinned' : ''}${segIntent === 'effort' ? ' intent' : ''}`}
@@ -713,6 +753,8 @@ export default function Composer() {
               ))}
             </div>
           </div>
+          </>
+          )}
 
           {/* mode — circle badge "M" (plan / build / auto); hover or click */}
           <div
@@ -742,6 +784,8 @@ export default function Composer() {
 
           <span className="grow" />
 
+          {advanced && (
+          <>
           <span
             className="ctx-meter tip-wrap"
             data-tip="Approximate conversation size (chars ÷ 4) — local models run uncapped, nothing is trimmed until the real window fills"
@@ -758,6 +802,8 @@ export default function Composer() {
               <span className="ctx-label">+{fmtTok(Math.round(s.streamText.length / 4))}</span>
             </span>
           ) : null}
+          </>
+          )}
 
           {s.streaming ? (
             <>

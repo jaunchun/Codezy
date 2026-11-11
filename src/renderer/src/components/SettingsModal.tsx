@@ -1,27 +1,92 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { applyTheme, useApp } from '../store/app'
+import { themeBase } from '../../../shared/commands'
+import { useFocusTrap } from '../lib/useFocusTrap'
 import type { ProviderConfig, ThemeName } from '../../../shared/types'
 import type { McpStatusEntry } from '../../../shared/api'
 import { PROVIDER_PRESETS } from '../../../shared/providers'
+import { MODEL_GUIDE } from '../../../shared/models'
 
 const THEMES: { id: ThemeName; label: string; preview: string }[] = [
-  { id: 'dark', label: 'Dark', preview: '#0b0b12' },
-  { id: 'light', label: 'Light', preview: '#f3f3f8' },
-  { id: 'acrylic', label: 'Acrylic', preview: 'linear-gradient(135deg,#2b2b3a,#0b0b12)' },
+  { id: 'graphite', label: 'Graphite', preview: 'linear-gradient(135deg,#1d2025 0%,#0b0c0e 70%)' },
+  { id: 'paper', label: 'Paper', preview: 'linear-gradient(135deg,#f7f4ec 0%,#e7e2d6 100%)' },
+  { id: 'contrast', label: 'Contrast', preview: 'linear-gradient(135deg,#000000 0%,#1a1a1a 100%)' },
   {
     id: 'singularity',
     label: 'Singularity',
     preview:
-      'radial-gradient(circle at 50% 50%, #000 0 18%, #ffffff 24%, #bdbdbd 30%, #1a1a1a 44%, #000000 62%), radial-gradient(circle at 50% 50%, rgba(255,255,255,0.5), transparent 52%), radial-gradient(circle at 14% 70%, rgba(255,255,255,0.55), transparent 42%), #000000'
-  },
-  { id: 'midnight', label: 'Midnight', preview: 'linear-gradient(135deg,#0b0b12 55%,#3d9bff)' },
-  { id: 'ember', label: 'Ember', preview: 'linear-gradient(135deg,#0b0b12 55%,#ff8a3d)' },
-  { id: 'mint', label: 'Mint', preview: 'linear-gradient(135deg,#0b0b12 55%,#3ddc97)' },
-  { id: 'slate', label: 'Slate', preview: 'linear-gradient(135deg,#0b0b12 55%,#a8b3cf)' }
+      'radial-gradient(circle at 50% 50%, #000 0 18%, #ffffff 24%, #bdbdbd 30%, #1a1a1a 44%, #000000 62%), radial-gradient(circle at 50% 50%, rgba(255,255,255,0.5), transparent 52%), #000000'
+  }
 ]
 
-/** accent swatches — surface themes follow them, palette themes override */
-const ACCENTS = ['#3d9bff', '#7c5cff', '#3ddc97', '#ff8a3d', '#ff5c7a', '#ffd166', '#a8b3cf', '#f0f0f5']
+/** accent swatches — the signal colour shared with the terminal /theme */
+const ACCENTS = ['#6FA8FF', '#C6F24E', '#FFB454', '#E48BFF']
+
+/** Top-level Settings categories. The old `.settings-section` labels stay in
+ *  the DOM inside these panes: tests, the palette jump and deep links all key
+ *  off them, while the sidebar keeps the long single scroll from being a maze. */
+type SettingsPane = 'general' | 'models' | 'agent' | 'tools' | 'data' | 'about'
+
+const SETTINGS_PANES: {
+  id: SettingsPane
+  label: string
+  note: string
+  advanced?: boolean
+  sections: { id: string; label: string }[]
+}[] = [
+  {
+    id: 'general',
+    label: 'General',
+    note: 'Profile, look, window',
+    sections: [
+      { id: 'set-profile', label: 'Profile' },
+      { id: 'set-appearance', label: 'Appearance & window' },
+      { id: 'set-input', label: 'Notifications & input' }
+    ]
+  },
+  {
+    id: 'models',
+    label: 'Models',
+    note: 'Endpoints and capabilities',
+    sections: [
+      { id: 'set-providers', label: 'Providers & endpoint' },
+      { id: 'set-model-guide', label: 'Supported models' }
+    ]
+  },
+  {
+    id: 'agent',
+    label: 'Agent',
+    note: 'Approvals and instructions',
+    sections: [
+      { id: 'set-behavior', label: 'Reply & agent mode' },
+      { id: 'set-instructions', label: 'Instructions' }
+    ]
+  },
+  {
+    id: 'tools',
+    label: 'Tools',
+    note: 'Third-party tools',
+    advanced: true,
+    sections: [{ id: 'set-mcp', label: 'MCP servers' }]
+  },
+  {
+    id: 'data',
+    label: 'Data',
+    note: 'Storage, memory, backup',
+    advanced: true,
+    sections: [
+      { id: 'set-storage', label: 'Storage' },
+      { id: 'set-learning', label: 'Learning & memory' },
+      { id: 'set-backup', label: 'Backup' }
+    ]
+  },
+  {
+    id: 'about',
+    label: 'About',
+    note: 'Version and updates',
+    sections: [{ id: 'set-about', label: 'About & updates' }]
+  }
+]
 
 /** Starter .codezy/instructions.md — says what the file is for and hands over
  *  the three sections that cover almost every project. */
@@ -48,10 +113,16 @@ const PI_TEMPLATE = [
 export default function SettingsModal() {
   const s = useApp()
   const settings = s.settings
+  const advanced = settings?.showAdvanced === true
   const [memory, setMemory] = useState('')
   const [newProvider, setNewProvider] = useState({ name: '', baseUrl: '', apiKey: '' })
   // hovering a theme swatch previews it; leaving restores the committed one
   const [previewTheme, setPreviewTheme] = useState<ThemeName | null>(null)
+  // category sidebar: one pane at a time, the old section labels stay inside
+  const [pane, setPane] = useState<SettingsPane>('general')
+  const contentRef = useRef<HTMLDivElement>(null)
+  const modalRef = useRef<HTMLDivElement>(null)
+  useFocusTrap(s.settingsOpen, modalRef, () => s.setSettingsOpen(false))
   // MCP servers (v3) — config from settings, status from a live probe
   const [mcp, setMcp] = useState<McpStatusEntry[] | null>(null)
   const [newMcp, setNewMcp] = useState({ name: '', command: '', args: '' })
@@ -104,8 +175,9 @@ export default function SettingsModal() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s.settingsOpen, activeSession?.id, roots.join('|')])
 
-  // v3.1 — the palette can jump straight to a section (e.g. MCP servers):
-  // scroll it into view, flash it briefly, then clear the request
+  // The palette can jump straight to a section (e.g. MCP servers). The target
+  // may live in another category, so switch the pane first, then scroll and
+  // flash. The immediate scroll keeps jsdom/deep-link calls synchronous.
   const jumpSection = s.settingsSection
   useEffect(() => {
     if (!jumpSection) return
@@ -113,16 +185,51 @@ export default function SettingsModal() {
       useApp.setState({ settingsSection: null }) // closed before the jump — drop it
       return
     }
-    const el = [...document.querySelectorAll('.settings-section')].find((n) => n.textContent === jumpSection)
-    el?.scrollIntoView({ block: 'start' })
-    el?.classList.add('flash')
+    const find = (): HTMLElement | undefined =>
+      [...document.querySelectorAll<HTMLElement>('.settings-section')].find((n) => n.textContent === jumpSection)
+    const first = find()
+    if (!first) {
+      useApp.setState({ settingsSection: null })
+      return
+    }
+    setPane((first.dataset.pane as SettingsPane) || 'general')
+    first.scrollIntoView({ block: 'start' })
+    first.classList.add('flash')
+    let clear = 0
     const t = window.setTimeout(() => {
-      el?.classList.remove('flash')
-      useApp.setState({ settingsSection: null }) // consumes the request without touching open state
-    }, 1700)
-    return () => window.clearTimeout(t)
+      const fresh = find()
+      fresh?.scrollIntoView({ block: 'start' })
+      fresh?.classList.add('flash')
+      clear = window.setTimeout(() => {
+        find()?.classList.remove('flash')
+        useApp.setState({ settingsSection: null }) // consumes the request without touching open state
+      }, 1700)
+    }, 25)
+    return () => {
+      window.clearTimeout(t)
+      if (clear) window.clearTimeout(clear)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s.settingsOpen, jumpSection])
+
+  /** Sidebar sub-link: scroll the visible pane to one of its section labels. */
+  const scrollToSection = (id: string): void => {
+    const el = contentRef.current?.querySelector<HTMLElement>(`#${id}`)
+    if (!el) return
+    el.scrollIntoView({ block: 'start' })
+    el.classList.add('flash')
+    window.setTimeout(() => el.classList.remove('flash'), 1700)
+  }
+
+  const openPane = (next: SettingsPane): void => {
+    setPane(next)
+    contentRef.current?.scrollTo({ top: 0 })
+  }
+
+  // Advanced panes disappear with the switch - never strand the modal there.
+  useEffect(() => {
+    if (!advanced && (pane === 'tools' || pane === 'data')) setPane('general')
+  }, [advanced, pane])
 
   /** Write the starter file into the linked folder (confined like any save). */
   const createPi = async (root: string): Promise<void> => {
@@ -182,7 +289,9 @@ export default function SettingsModal() {
 
   if (!s.settingsOpen || !settings) return null
 
-  const shownTheme = previewTheme ?? settings.theme
+  // legacy ids (dark/light/acrylic) ring their nearest surface, so an old
+  // settings file still shows exactly one active swatch.
+  const shownTheme = previewTheme ?? themeBase(settings.theme)
   const preview = (t: ThemeName) => {
     setPreviewTheme(t)
     applyTheme(t, settings.accent)
@@ -232,9 +341,19 @@ export default function SettingsModal() {
 
   return (
     <div className="overlay" onClick={() => s.setSettingsOpen(false)}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>
-          Settings & Accounts
+      <div
+        className="modal settings-modal"
+        ref={modalRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-title"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="settings-head">
+          <div>
+            <h2 id="settings-title">Settings &amp; Accounts</h2>
+            <p className="settings-lede">Tune the app, models, agent and data. Changes save as you go.</p>
+          </div>
           <span className="row" style={{ gap: 6 }}>
             <button
               className="btn ghost"
@@ -250,10 +369,42 @@ export default function SettingsModal() {
               Close
             </button>
           </span>
-        </h2>
+        </div>
+
+        <div className="settings-layout">
+          <nav className="settings-nav" aria-label="Settings categories">
+            {SETTINGS_PANES.filter((group) => advanced || !group.advanced).map((group) => (
+              <div className="settings-nav-group" key={group.id}>
+                <button
+                  className={`settings-nav-btn${pane === group.id ? ' active' : ''}`}
+                  aria-current={pane === group.id ? 'page' : undefined}
+                  onClick={() => openPane(group.id)}
+                >
+                  <span>{group.label}</span>
+                  <span className="settings-nav-note">{group.note}</span>
+                </button>
+                {pane === group.id && (
+                  <div className="settings-nav-sub">
+                    {group.sections.map((sec) => (
+                      <button key={sec.id} className="settings-nav-link" onClick={() => scrollToSection(sec.id)}>
+                        {sec.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </nav>
+
+          <div className="settings-main" ref={contentRef}>
+            <section className="settings-pane" hidden={pane !== 'general'} aria-labelledby="settings-general">
+              <div className="settings-pane-head">
+                <h3 id="settings-general">General</h3>
+                <p>Your name, the interface, the window, and how notifications behave.</p>
+              </div>
 
         {/* profile ------------------------------------------------------- */}
-        <div className="settings-section">profile</div>
+        <div className="settings-section" id="set-profile" data-pane="general">profile</div>
         <div className="field">
           <label>Your name (used in what CODEZY learns about you)</label>
           <input
@@ -265,11 +416,32 @@ export default function SettingsModal() {
         </div>
 
         {/* appearance ----------------------------------------------------- */}
-        <div className="settings-section">appearance</div>
+        <div className="settings-section" id="set-appearance" data-pane="general">appearance</div>
         <div className="field">
           <label>
-            Theme — dark/light/acrylic/singularity are surfaces · midnight/ember/mint/slate are accent
-            palettes shared with the terminal
+            Advanced features — MCP servers, storage, memory, extra composer controls and the full command
+            list. Off keeps the app to the essentials.
+          </label>
+          <div className="row">
+            <button
+              className={`btn ${!advanced ? 'primary' : ''}`}
+              aria-pressed={!advanced}
+              onClick={() => void s.updateSettings({ showAdvanced: false })}
+            >
+              simple
+            </button>
+            <button
+              className={`btn ${advanced ? 'primary' : ''}`}
+              aria-pressed={advanced}
+              onClick={() => void s.updateSettings({ showAdvanced: true })}
+            >
+              advanced
+            </button>
+          </div>
+        </div>
+        <div className="field">
+          <label>
+            Theme — graphite, paper, contrast and singularity (the black-hole surface) · legacy names still resolve
           </label>
           <div className="theme-picker">
             {THEMES.map((t) => (
@@ -292,7 +464,7 @@ export default function SettingsModal() {
 
         <div className="field">
           <label>
-            Accent — surface themes follow it · palette themes override it to stay in sync with the terminal
+            Accent — the signal colour used across the app and shared with the terminal
           </label>
           <div className="accent-row">
             {ACCENTS.map((c) => (
@@ -323,6 +495,98 @@ export default function SettingsModal() {
               onClick={() => void s.updateSettings({ reduceMotion: false })}
             >
               full motion
+            </button>
+          </div>
+        </div>
+
+        <div className="field">
+          <label>Tray — what the ✕ does (hidden in the tray it stays one click away)</label>
+          <div className="row">
+            <button
+              className={`btn ${settings.minimizeToTray ? 'primary' : ''}`}
+              onClick={() => void s.updateSettings({ minimizeToTray: true })}
+            >
+              keep in tray
+            </button>
+            <button
+              className={`btn ${!settings.minimizeToTray ? 'primary' : ''}`}
+              onClick={() => void s.updateSettings({ minimizeToTray: false })}
+            >
+              quit on close
+            </button>
+          </div>
+        </div>
+
+        <div className="field">
+          <label>Startup — launch CODEZY when you log in</label>
+          <div className="row">
+            <button
+              className={`btn ${settings.openAtLogin ? 'primary' : ''}`}
+              onClick={() => void s.updateSettings({ openAtLogin: true })}
+            >
+              launch at login
+            </button>
+            <button
+              className={`btn ${!settings.openAtLogin ? 'primary' : ''}`}
+              onClick={() => void s.updateSettings({ openAtLogin: false })}
+            >
+              manual only
+            </button>
+          </div>
+        </div>
+
+        {settings.minimizeToTray && (
+          <div className="field">
+            <label>
+              Start hidden — a login-item launch goes straight to the tray (no window flash)
+            </label>
+            <div className="row">
+              <button
+                className={`btn ${settings.startHidden ? 'primary' : ''}`}
+                onClick={() => void s.updateSettings({ startHidden: true })}
+              >
+                start in tray
+              </button>
+              <button
+                className={`btn ${!settings.startHidden ? 'primary' : ''}`}
+                onClick={() => void s.updateSettings({ startHidden: false })}
+              >
+                show the window
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="field">
+          <label>Always on top — keep CODEZY above other windows while you code</label>
+          <div className="row">
+            <button
+              className={`btn ${settings.alwaysOnTop ? 'primary' : ''}`}
+              onClick={() => void s.updateSettings({ alwaysOnTop: true })}
+            >
+              on top
+            </button>
+            <button
+              className={`btn ${!settings.alwaysOnTop ? 'primary' : ''}`}
+              onClick={() => void s.updateSettings({ alwaysOnTop: false })}
+            >
+              normal
+            </button>
+          </div>
+        </div>
+
+        <div className="field">
+          <label>Diagnostics — launch/crash lines live in ~/.codezy/logs</label>
+          <div className="row">
+            <button
+              className="btn"
+              onClick={() => {
+                void window.codezy.app.openLogs().then((err) => {
+                  if (err) s.addNotice(`Could not open logs: ${err}`, 'error')
+                })
+              }}
+            >
+              open logs folder
             </button>
           </div>
         </div>
@@ -381,8 +645,68 @@ export default function SettingsModal() {
           </div>
         </div>
 
+        {/* notifications & input ------------------------------------------ */}
+        <div className="settings-section" id="set-input" data-pane="general">
+          notifications &amp; input
+        </div>
+        <div className="field">
+          <label>Notifications — OS popup when a reply finishes while the window is unfocused</label>
+          <div className="row">
+            <button
+              className={`btn ${settings.notifyDone ? 'primary' : ''}`}
+              onClick={() => void s.updateSettings({ notifyDone: true })}
+            >
+              on
+            </button>
+            <button
+              className={`btn ${!settings.notifyDone ? 'primary' : ''}`}
+              onClick={() => void s.updateSettings({ notifyDone: false })}
+            >
+              off
+            </button>
+            <button
+              className="btn ghost"
+              onClick={() => {
+                try {
+                  new Notification('CODEZY', { body: 'This is what a finished reply looks like.' })
+                  s.addNotice('Test notification sent.')
+                } catch (e) {
+                  s.addNotice(`Notification failed: ${e instanceof Error ? e.message : e}`, 'error')
+                }
+              }}
+            >
+              send a test
+            </button>
+          </div>
+        </div>
+
+        <div className="field">
+          <label>Enter behavior in the composer</label>
+          <div className="row">
+            <button
+              className={`btn ${settings.enterSends !== false ? 'primary' : ''}`}
+              onClick={() => void s.updateSettings({ enterSends: true })}
+            >
+              Enter sends
+            </button>
+            <button
+              className={`btn ${settings.enterSends === false ? 'primary' : ''}`}
+              onClick={() => void s.updateSettings({ enterSends: false })}
+            >
+              Ctrl+Enter sends
+            </button>
+          </div>
+        </div>
+            </section>
+
+            <section className="settings-pane" hidden={pane !== 'models'} aria-labelledby="settings-models">
+              <div className="settings-pane-head">
+                <h3 id="settings-models">Models</h3>
+                <p>One local endpoint or any OpenAI-compatible provider — plus what each model can do.</p>
+              </div>
+
         {/* engines ------------------------------------------------------- */}
-        <div className="settings-section">models &amp; providers</div>
+        <div className="settings-section" id="set-providers" data-pane="models">models &amp; providers</div>
         <div className="field">
           <label>Ollama URL</label>
           <input
@@ -471,8 +795,47 @@ export default function SettingsModal() {
           </div>
         </div>
 
+        {/* supported models — tools are the requirement for agent mode ---- */}
+        <div className="field model-guide" id="set-model-guide">
+          <label>
+            Models that work with agent mode — tool calling is the requirement. Installed models are marked;
+            a model marked <b>chat only</b> still works, but edits use the classic blocks.
+          </label>
+          <div className="mg-rows">
+            {MODEL_GUIDE.map((m) => {
+              const installed = s.models.some((x) => x.id === m.id || x.id === `${m.id}:latest`)
+              return (
+                <div className={`mg-row${m.tools ? '' : ' no-tools'}`} key={m.id}>
+                  <span className={`mg-dot ${m.tools ? 'ok' : 'no'}`} aria-hidden />
+                  <span className="mg-name">{m.label}</span>
+                  <span className="mg-use">{m.use}</span>
+                  <span className="mg-ram">{m.ram}</span>
+                  <span className={`mg-tag ${m.tools ? 'ok' : 'no'}`}>{m.tools ? 'tools' : 'chat only'}</span>
+                  <span className="mg-note">{m.note}</span>
+                  {installed ? (
+                    <span className="mg-installed">installed</span>
+                  ) : (
+                    <code className="mg-pull">ollama pull {m.id}</code>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+          <div className="mg-foot">
+            The picker badges every installed model the same way — <b>tools</b> means agent mode can read,
+            search and write. Runtime truth comes from Ollama&apos;s <code>/api/show</code>.
+          </div>
+        </div>
+            </section>
+
+            <section className="settings-pane" hidden={pane !== 'tools'} aria-labelledby="settings-tools">
+              <div className="settings-pane-head">
+                <h3 id="settings-tools">Tools</h3>
+                <p>MCP servers add third-party tools to the agent. They run with your permissions — treat them as code.</p>
+              </div>
+
         {/* MCP (v3) -------------------------------------------------------- */}
-        <div className="settings-section">MCP servers</div>
+        <div className="settings-section" id="set-mcp" data-pane="tools">MCP servers</div>
         <div className="field">
           <label>
             Model Context Protocol servers — external processes whose tools the agent calls as
@@ -567,9 +930,16 @@ export default function SettingsModal() {
             the last connection answered (green = connected, red = error, grey = disabled)
           </div>
         </div>
+            </section>
+
+            <section className="settings-pane" hidden={pane !== 'agent'} aria-labelledby="settings-agent">
+              <div className="settings-pane-head">
+                <h3 id="settings-agent">Agent</h3>
+                <p>How the model plans and edits, and the standing orders it follows in every chat.</p>
+              </div>
 
         {/* instructions -------------------------------------------------- */}
-        <div className="settings-section">instructions</div>
+        <div className="settings-section" id="set-instructions" data-pane="agent">instructions</div>
         <div className="field">
           <label>
             Custom instructions — sent with every message: tone, rules, language, things to always or never do
@@ -624,7 +994,7 @@ export default function SettingsModal() {
         </div>
 
         {/* behavior -------------------------------------------------------- */}
-        <div className="settings-section">behavior</div>
+        <div className="settings-section" id="set-behavior" data-pane="agent">behavior</div>
         <div className="field">
           <label>
             Reply mode — plan: the model only plans · build: proposes edits you accept · auto: applies
@@ -682,8 +1052,9 @@ export default function SettingsModal() {
         {/* agent mode (v2) ------------------------------------------------- */}
         <div className="field">
           <label>
-            Agent mode (v2) — the model reads, searches, writes and runs commands itself through the shared
-            harness; every write/command asks for your approval first. Needs a linked folder.
+            Agent mode (v2) — on by default over a linked folder: the model reads, searches, writes and runs
+            commands itself through the shared harness; every write/command asks for your approval first. A
+            model that cannot call tools automatically falls back to edit blocks with your real files.
           </label>
           <div className="row">
             <button
@@ -701,59 +1072,16 @@ export default function SettingsModal() {
           </div>
         </div>
 
-        {/* notifications --------------------------------------------------- */}
-        <div className="field">
-          <label>Notifications — OS popup when a reply finishes while the window is unfocused</label>
-          <div className="row">
-            <button
-              className={`btn ${settings.notifyDone ? 'primary' : ''}`}
-              onClick={() => void s.updateSettings({ notifyDone: true })}
-            >
-              on
-            </button>
-            <button
-              className={`btn ${!settings.notifyDone ? 'primary' : ''}`}
-              onClick={() => void s.updateSettings({ notifyDone: false })}
-            >
-              off
-            </button>
-            <button
-              className="btn ghost"
-              onClick={() => {
-                try {
-                  new Notification('CODEZY', { body: 'This is what a finished reply looks like.' })
-                  s.addNotice('Test notification sent.')
-                } catch (e) {
-                  s.addNotice(`Notification failed: ${e instanceof Error ? e.message : e}`, 'error')
-                }
-              }}
-            >
-              send a test
-            </button>
-          </div>
-        </div>
+            </section>
 
-        {/* enter behavior --------------------------------------------------- */}
-        <div className="field">
-          <label>Enter behavior in the composer</label>
-          <div className="row">
-            <button
-              className={`btn ${settings.enterSends !== false ? 'primary' : ''}`}
-              onClick={() => void s.updateSettings({ enterSends: true })}
-            >
-              Enter sends
-            </button>
-            <button
-              className={`btn ${settings.enterSends === false ? 'primary' : ''}`}
-              onClick={() => void s.updateSettings({ enterSends: false })}
-            >
-              Ctrl+Enter sends
-            </button>
-          </div>
-        </div>
+            <section className="settings-pane" hidden={pane !== 'data'} aria-labelledby="settings-data">
+              <div className="settings-pane-head">
+                <h3 id="settings-data">Data</h3>
+                <p>Where sessions live, what CODEZY remembers, and how to move preferences between machines.</p>
+              </div>
 
         {/* storage ------------------------------------------------------- */}
-        <div className="settings-section">storage</div>
+        <div className="settings-section" id="set-storage" data-pane="data">storage</div>
         <div className="field">
           <label>Data folder (sessions, memory, skills)</label>
           <div className="row">
@@ -798,7 +1126,7 @@ export default function SettingsModal() {
         </div>
 
         {/* learning ------------------------------------------------------ */}
-        <div className="settings-section">learning &amp; memory</div>
+        <div className="settings-section" id="set-learning" data-pane="data">learning &amp; memory</div>
         <div className="field">
           <label>Learning — CODEZY remembers things about you in memory.md</label>
           <div className="row">
@@ -838,7 +1166,7 @@ export default function SettingsModal() {
         </div>
 
         {/* backup --------------------------------------------------------- */}
-        <div className="settings-section">backup</div>
+        <div className="settings-section" id="set-backup" data-pane="data">backup</div>
         <div className="field">
           <label>Settings backup — save this machine's settings to a file, or load ones exported elsewhere</label>
           <div className="row">
@@ -853,9 +1181,16 @@ export default function SettingsModal() {
             Folders never move between machines — only preferences, models and provider keys are in the file.
           </div>
         </div>
+            </section>
+
+            <section className="settings-pane" hidden={pane !== 'about'} aria-labelledby="settings-about">
+              <div className="settings-pane-head">
+                <h3 id="settings-about">About</h3>
+                <p>The build you are running, and where the next one comes from.</p>
+              </div>
 
         {/* about ---------------------------------------------------------- */}
-        <div className="settings-section">about</div>
+        <div className="settings-section" id="set-about" data-pane="about">about</div>
         <div className="field">
           <div className="row" style={{ gap: 10 }}>
             <span className="chip">CODEZY v{__APP_VERSION__}</span>
@@ -885,6 +1220,9 @@ export default function SettingsModal() {
           </div>
           <div className="hint">
             The update appears as a small pill in the top bar — you choose when it installs.
+          </div>
+        </div>
+            </section>
           </div>
         </div>
       </div>

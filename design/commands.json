@@ -1,0 +1,606 @@
+{
+  "version": 1,
+  "codename": "Signal",
+  "commands": [
+    {
+      "name": "/help",
+      "args": "[all]",
+      "description": "List the commands",
+      "tier": "core",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/clear",
+      "args": "",
+      "description": "Clear the current chat (stays in the session list)",
+      "tier": "core",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": [
+        "/new"
+      ]
+    },
+    {
+      "name": "/new",
+      "args": "[project]",
+      "description": "Start a new chat",
+      "tier": "core",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/mode",
+      "args": "<plan|build|auto>",
+      "description": "plan = advice only, build = you accept edits, auto = apply them",
+      "tier": "core",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/model",
+      "args": "[id]",
+      "description": "Show or switch the active model",
+      "tier": "core",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/provider",
+      "args": "[id|nebius key]",
+      "description": "Switch providers or connect Nebius Token Factory",
+      "tier": "core",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/files",
+      "args": "<folder|off>",
+      "description": "Link a folder the model may read and edit",
+      "tier": "core",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/sessions",
+      "args": "",
+      "description": "Browse and resume saved sessions",
+      "tier": "core",
+      "surfaces": [
+        "cli"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/diff",
+      "args": "[path]",
+      "description": "Git changes vs HEAD in the linked folder",
+      "tier": "core",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/review",
+      "args": "",
+      "description": "Review the pending edits like a code reviewer",
+      "tier": "core",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/undo",
+      "args": "",
+      "description": "Revert the last file edit",
+      "tier": "core",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/compact",
+      "args": "",
+      "description": "Trim old history so context never overflows",
+      "tier": "core",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/export",
+      "args": "[path]",
+      "description": "Export this chat as Markdown",
+      "tier": "core",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/copy",
+      "args": "[text]",
+      "description": "Copy the last reply to the clipboard",
+      "tier": "core",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/update",
+      "args": "",
+      "description": "Check for a newer CODEZY and install in place",
+      "tier": "core",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/effort",
+      "args": "<light|medium|deep>",
+      "description": "How much thinking power to spend",
+      "tier": "advanced",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/fast",
+      "args": "",
+      "description": "Toggle fast mode: effort light to medium",
+      "tier": "advanced",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/theme",
+      "args": "[name]",
+      "description": "Switch the app theme or terminal accent palette",
+      "tier": "advanced",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/vim",
+      "args": "<on|off>",
+      "description": "Modal editing: esc, hjkl, x, dd, i/a/o",
+      "tier": "advanced",
+      "surfaces": [
+        "cli"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/rewind",
+      "args": "[n]",
+      "description": "Drop the last messages, step back in this chat",
+      "tier": "advanced",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/remember",
+      "args": "<fact>",
+      "description": "Teach CODEZY a fact it must never forget",
+      "tier": "advanced",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/memory",
+      "args": "[clear]",
+      "description": "Show or clear what CODEZY learned about you",
+      "tier": "advanced",
+      "surfaces": [
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/drive",
+      "args": "<folder|off>",
+      "description": "Mirror sessions into a Google Drive folder",
+      "tier": "advanced",
+      "surfaces": [
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/usage",
+      "args": "",
+      "description": "Context window, token counts and session stats",
+      "tier": "advanced",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/doctor",
+      "args": "",
+      "description": "Check the environment: model, endpoint, folder, memory",
+      "tier": "advanced",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/cost",
+      "args": "",
+      "description": "Tokens this chat used, transcript estimate, last reply",
+      "tier": "advanced",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/skill",
+      "args": "[name|off]",
+      "description": "Activate a skill (prompt playbook)",
+      "tier": "advanced",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/history",
+      "args": "",
+      "description": "Every backup taken before an edit, restore any point",
+      "tier": "advanced",
+      "surfaces": [
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/archive",
+      "args": "",
+      "description": "Archive this chat until show archived is on",
+      "tier": "advanced",
+      "surfaces": [
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/pin",
+      "args": "",
+      "description": "Pin or unpin this chat to the top of the sidebar",
+      "tier": "advanced",
+      "surfaces": [
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/transcript",
+      "args": "",
+      "description": "Copy the whole conversation to the clipboard",
+      "tier": "advanced",
+      "surfaces": [
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/fontsize",
+      "args": "[12..20]",
+      "description": "Show or set the interface font size",
+      "tier": "advanced",
+      "surfaces": [
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/density",
+      "args": "[cozy|compact]",
+      "description": "Row and padding density of the interface",
+      "tier": "advanced",
+      "surfaces": [
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/search",
+      "args": "<query>",
+      "description": "Search the internet (DuckDuckGo, no key)",
+      "tier": "advanced",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/init",
+      "args": "",
+      "description": "Generate a context file for the linked project folder",
+      "tier": "advanced",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/mcp",
+      "args": "",
+      "description": "MCP servers: status and the tools they offer",
+      "tier": "advanced",
+      "surfaces": [
+        "cli"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/todos",
+      "args": "",
+      "description": "Show the agent's current checklist",
+      "tier": "advanced",
+      "surfaces": [
+        "cli"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/scout",
+      "args": "<q>",
+      "description": "Read-only research run, files findings into context",
+      "tier": "advanced",
+      "surfaces": [
+        "cli"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/btw",
+      "args": "<note|show|clear>",
+      "description": "Add a background note that is always in context",
+      "tier": "advanced",
+      "surfaces": [
+        "cli",
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/learn",
+      "args": "<on|off>",
+      "description": "Let CODEZY remember things about you",
+      "tier": "advanced",
+      "surfaces": [
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/goal",
+      "args": "<text|show|clear>",
+      "description": "Set the active goal the model must follow",
+      "tier": "advanced",
+      "surfaces": [
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/add-dir",
+      "args": "<folder>",
+      "description": "Link another folder to this chat",
+      "tier": "advanced",
+      "surfaces": [
+        "desktop"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/link",
+      "args": "<dir|off>",
+      "description": "Folder the model may read and edit",
+      "tier": "advanced",
+      "surfaces": [
+        "cli"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/apply",
+      "args": "",
+      "description": "Write the proposal you skipped",
+      "tier": "advanced",
+      "surfaces": [
+        "cli"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/resume",
+      "args": "[n]",
+      "description": "Restore a saved session (no n shows picker)",
+      "tier": "advanced",
+      "surfaces": [
+        "cli"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/open",
+      "args": "[n]",
+      "description": "Load an app chat as context (no n shows picker)",
+      "tier": "advanced",
+      "surfaces": [
+        "cli"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/save",
+      "args": "[title]",
+      "description": "Save this session",
+      "tier": "advanced",
+      "surfaces": [
+        "cli"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/root",
+      "args": "[dir]",
+      "description": "Show or set the workspace root",
+      "tier": "advanced",
+      "surfaces": [
+        "cli"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/settings",
+      "args": "",
+      "description": "View and edit the shared config file",
+      "tier": "advanced",
+      "surfaces": [
+        "cli"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/models",
+      "args": "[id]",
+      "description": "List or switch models (ollama and providers)",
+      "tier": "advanced",
+      "surfaces": [
+        "cli"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/thinking",
+      "args": "[on|off]",
+      "description": "Long mode, reason-first replies, double step budget",
+      "tier": "advanced",
+      "surfaces": [
+        "cli"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/tools",
+      "args": "",
+      "description": "Every tool the agent can call including MCP",
+      "tier": "advanced",
+      "surfaces": [
+        "cli"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/auto",
+      "args": "[on|off]",
+      "description": "Toggle auto-approval of gated tools",
+      "tier": "advanced",
+      "surfaces": [
+        "cli"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/exit",
+      "args": "",
+      "description": "Exit (ctrl+c works too)",
+      "tier": "advanced",
+      "surfaces": [
+        "cli"
+      ],
+      "aliases": [
+        "/quit"
+      ]
+    },
+    {
+      "name": "/quit",
+      "args": "",
+      "description": "Exit (ctrl+c works too)",
+      "tier": "advanced",
+      "surfaces": [
+        "cli"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/config",
+      "args": "[get|set|list|edit]",
+      "description": "One settings surface, --json for scripts",
+      "tier": "advanced",
+      "surfaces": [
+        "cli"
+      ],
+      "aliases": []
+    },
+    {
+      "name": "/keys",
+      "args": "",
+      "description": "Manage provider API keys",
+      "tier": "advanced",
+      "surfaces": [
+        "cli"
+      ],
+      "aliases": []
+    }
+  ]
+}

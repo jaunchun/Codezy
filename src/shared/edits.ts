@@ -155,6 +155,86 @@ export function parseEdits(text: string): ParsedEdit[] {
   return parsed
 }
 
+export interface LiveEdit extends FileEdit {
+  added: number
+  removed: number
+  /** the trailing block is still streaming (no ===END yet). */
+  streaming: boolean
+  /** ===REPLACE hasn't landed yet — still collecting the SEARCH lines. */
+  awaitingReplace: boolean
+}
+
+// Live parsing runs on every token, so complete blocks (whose body is
+// identical between renders) hit this per-body cache; only the trailing
+// half-written block is recomputed.
+const liveCache = new Map<string, LiveEdit>()
+const LIVE_CACHE_MAX = 400
+
+/**
+ * Every ===FILE block INCLUDING the trailing one still being written — the
+ * live edit panel draws the agent's changes token by token, so unlike
+ * parseEdits (which waits for ===END) the block in progress is never dropped.
+ */
+export function parseEditsLive(text: string): LiveEdit[] {
+  if (!text.includes('===FILE')) return []
+  const out: LiveEdit[] = []
+  FILE_HEAD.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = FILE_HEAD.exec(text))) {
+    const filePath = m[1].trim()
+    if (!filePath) continue
+    const bodyStart = m.index + m[0].length
+    const endIdx = text.indexOf('===END', bodyStart)
+    const streaming = endIdx === -1
+    const body = streaming ? text.slice(bodyStart) : text.slice(bodyStart, endIdx)
+
+    const cached = liveCache.get(body)
+    if (cached) {
+      out.push(cached)
+      continue
+    }
+
+    const sIdx = body.search(/===SEARCH\b/)
+    const rIdx = body.search(/===REPLACE\b/)
+    let edit: LiveEdit
+    if (sIdx === -1) {
+      // the header just landed (or the marker is still being typed) — the
+      // file name is already worth showing; the caret sits on the empty diff
+      edit = {
+        path: filePath,
+        search: '',
+        replace: '',
+        isNew: false,
+        added: 0,
+        removed: 0,
+        streaming,
+        awaitingReplace: true
+      }
+    } else {
+      if (rIdx !== -1 && rIdx < sIdx) continue // REPLACE before SEARCH: malformed, skip
+      const awaitingReplace = rIdx === -1
+      const searchRaw = body.slice(afterLine(body, sIdx), awaitingReplace ? body.length : rIdx)
+      const replaceRaw = awaitingReplace ? '' : body.slice(afterLine(body, rIdx))
+      const trimmedSearch = searchRaw.trim()
+      // blank search only means "new file" once the block finished — while it
+      // streams, EMPTY/new content may still be arriving.
+      const isNew = trimmedSearch === 'EMPTY' || (trimmedSearch === '' && !awaitingReplace)
+      const base: FileEdit = {
+        path: filePath,
+        isNew,
+        search: isNew ? '' : stripFences(searchRaw),
+        replace: awaitingReplace ? '' : stripFences(replaceRaw)
+      }
+      edit = { ...base, ...countChanges(base), streaming, awaitingReplace }
+    }
+
+    if (liveCache.size >= LIVE_CACHE_MAX) liveCache.clear()
+    liveCache.set(body, edit)
+    out.push(edit)
+  }
+  return out
+}
+
 /**
  * Removes edit blocks from the message so the markdown renderer only shows
  * the prose — the blocks are presented by the styled "New edit" card instead

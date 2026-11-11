@@ -32,6 +32,9 @@ const run = (dir: string, argv: string[], timeout = 10000) => {
 }
 
 export function gitDiff(folder: string, pathspec?: string): GitDiff {
+  // Same volume-root guard as gitStatus: a stray C:\.git must not turn a
+  // plain folder into a repository (or make git walk the whole drive).
+  if (!inRepo(folder)) return empty(folder, `"${folder}" is not a git repository`)
   const st = run(folder, ['status', '--porcelain=1', ...(pathspec ? ['--', pathspec] : [])])
   if (!st || st.status !== 0) return empty(folder, `"${folder}" is not a git repository`)
 

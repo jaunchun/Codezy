@@ -150,7 +150,7 @@ export default function UsageModal() {
   if (!open) return null
 
   return (
-    <div ref={rootRef} className="usage-panel" role="region" aria-label="Usage stats">
+    <div ref={rootRef} className="usage-panel" role="dialog" aria-label="Usage stats" aria-busy={!stats}>
       <div className="usage-body">
         <div className="usage-head">
           <div className="usage-tabs">
@@ -167,7 +167,7 @@ export default function UsageModal() {
                 {r.label}
               </button>
             ))}
-            <button className="x" onClick={() => setOpen(false)} title="Close (Esc)">
+            <button className="x" onClick={() => setOpen(false)} title="Close (Esc)" aria-label="Close usage stats">
               ✕
             </button>
           </div>

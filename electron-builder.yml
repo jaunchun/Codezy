@@ -10,6 +10,32 @@ directories:
 files:
   - out/**/*
   - package.json
+# The terminal agent ships with the app (outside the asar, so a plain `node`
+# can run it): "Open terminal interface" then works in an installed build with
+# no npm install. 3.2.0 bundles the unified REPL (index.mjs + src/) and its one
+# runtime dependency, nanospinner; codezy.mjs stays for the legacy TUI.
+#
+# Dependencies are copied as their own FileSet: electron-builder's filter
+# always drops a *root* directory named `node_modules`, so a
+# `node_modules/nanospinner/**/*` pattern under `from: ../codezy-cli` matches
+# nothing. Pointing `from` at the dependency tree makes each package the root.
+extraResources:
+  - from: ../codezy-cli
+    to: cli
+    filter:
+      - index.mjs
+      - print.mjs
+      - doctor.mjs
+      - codezy-v2.mjs
+      - codezy.mjs
+      - package.json
+      - lib/**/*
+      - src/**/*
+  - from: ../codezy-cli/node_modules
+    to: cli/node_modules
+    filter:
+      - nanospinner/**/*
+      - picocolors/**/*
 asar: true
 win:
   icon: build/icon.png
@@ -31,3 +57,25 @@ nsis:
   shortcutName: CODEZY
   uninstallDisplayName: CODEZY
   artifactName: CODEZY-Setup-${version}.exe
+# macOS and Linux targets so `npm run dist:mac` / `npm run dist:linux` build
+# on their own hosts (a Mac for the dmg, a Linux box for the AppImage/deb —
+# cross-building them from Windows is not supported by electron). The owner
+# publishes UNSIGNED builds, so mac signing is explicitly off (`identity:
+# null` keeps electron-builder from hunting a certificate). Once mac/linux
+# assets land on the GitHub release the in-app updater picks them up with no
+# code changes (update.ts matches .dmg/.zip on macOS, .AppImage/.deb/.rpm on
+# Linux) and opens the release page to install manually — the silent
+# in-place install stays a Windows feature.
+mac:
+  identity: null
+  category: public.app-category.developer-tools
+  target:
+    - dmg
+    - zip
+linux:
+  category: Development
+  maintainer: kajtg <jaunchun@users.noreply.github.com>
+  synopsis: one local mind for your codebase
+  target:
+    - AppImage
+    - deb

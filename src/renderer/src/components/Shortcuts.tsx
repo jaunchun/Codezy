@@ -1,5 +1,6 @@
-import { useEffect } from 'react'
+import { useRef } from 'react'
 import { useApp } from '../store/app'
+import { useFocusTrap } from '../lib/useFocusTrap'
 import { IconX } from './Icons'
 
 type Row = [label: string, key: string]
@@ -15,6 +16,7 @@ const GENERAL: Row[] = [
 
 const CHAT: Row[] = [
   ['Find in chat', 'Ctrl+F'],
+  ['Find in files (linked folders)', 'Ctrl+Shift+G'],
   ['Search every chat', 'Ctrl+Shift+F'],
   ['Accept edits (preview open)', 'Ctrl+Enter'],
   ['Close popups / find', 'Esc'],
@@ -51,21 +53,13 @@ export default function Shortcuts() {
   const open = useApp((s) => s.shortcutsOpen)
   const toggle = useApp((s) => s.toggleShortcuts)
   const enterSends = useApp((s) => s.settings?.enterSends !== false)
-
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        toggle()
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, toggle])
+  const advanced = useApp((s) => s.settings?.showAdvanced === true)
+  const panelRef = useRef<HTMLDivElement>(null)
+  useFocusTrap(open, panelRef, toggle)
 
   if (!open) return null
 
+  const general = advanced ? GENERAL : GENERAL.filter(([label]) => label !== 'Usage dashboard')
   const composer: Row[] = [
     [enterSends ? 'Send' : 'New line', enterSends ? 'Enter' : 'Shift+Enter'],
     [enterSends ? 'New line' : 'Send', enterSends ? 'Shift+Enter' : 'Ctrl+Enter'],
@@ -80,7 +74,7 @@ export default function Shortcuts() {
         if (e.target === e.currentTarget) toggle()
       }}
     >
-      <div className="modal shortcuts-modal" role="dialog" aria-label="Keyboard shortcuts">
+      <div className="modal shortcuts-modal" ref={panelRef} role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
         <div className="sc-head">
           <b>Keyboard shortcuts</b>
           <span className="sc-sub">cheat sheet</span>
@@ -89,10 +83,10 @@ export default function Shortcuts() {
           </button>
         </div>
         <div className="sc-grid">
-          <Section title="General" rows={GENERAL} />
+          <Section title="General" rows={general} />
           <Section title="In a chat" rows={CHAT} />
           <Section title="Composer" rows={composer} />
-          <Section title="Cowork editor" rows={COWORK} />
+          {advanced && <Section title="Cowork editor" rows={COWORK} />}
         </div>
         <div className="kbd-hint">ctrl + / toggles this sheet</div>
       </div>

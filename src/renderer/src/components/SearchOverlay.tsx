@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useApp } from '../store/app'
 import type { ChatSearchHit } from '../../../shared/api'
+import { useFocusTrap } from '../lib/useFocusTrap'
 import { IconSearch, IconX } from './Icons'
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -30,6 +31,9 @@ export default function SearchOverlay() {
   const [text, setText] = useState('')
   const [active, setActiveIdx] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const close = (): void => useApp.getState().setSearchOpen(false)
+  useFocusTrap(open, panelRef, close, inputRef)
 
   // reset + focus whenever the overlay opens
   useEffect(() => {
@@ -67,8 +71,6 @@ export default function SearchOverlay() {
     } else if (e.key === 'Enter') {
       const hit = hits[active] ?? hits[0]
       if (hit) pick(hit)
-    } else if (e.key === 'Escape') {
-      useApp.getState().setSearchOpen(false)
     }
   }
 
@@ -79,7 +81,7 @@ export default function SearchOverlay() {
         if (e.target === e.currentTarget) useApp.getState().setSearchOpen(false)
       }}
     >
-      <div className="search-panel" role="dialog" aria-label="Search every chat">
+      <div className="search-panel" ref={panelRef} role="dialog" aria-modal="true" aria-label="Search every chat">
         <div className="search-head">
           <IconSearch style={{ width: 15, height: 15 }} aria-hidden />
           <input

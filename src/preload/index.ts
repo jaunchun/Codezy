@@ -66,12 +66,19 @@ const api: CodezyApi = {
   search: {
     query: (q: string) => ipcRenderer.invoke('search:query', q)
   },
+  preview: {
+    files: (sessionId: string) => ipcRenderer.invoke('preview:files', sessionId),
+    default: (sessionId: string) => ipcRenderer.invoke('preview:default', sessionId),
+    watch: (sessionId: string) => ipcRenderer.invoke('preview:watch', sessionId),
+    unwatch: (sessionId: string) => ipcRenderer.invoke('preview:unwatch', sessionId)
+  },
   git: {
     diff: (sessionId: string, pathspec?: string) => ipcRenderer.invoke('git:diff', sessionId, pathspec),
     status: (sessionId: string, folder: string) => ipcRenderer.invoke('git:status', sessionId, folder)
   },
   files: {
     list: (sessionId: string, query: string) => ipcRenderer.invoke('files:list', sessionId, query),
+    search: (sessionId: string, query: string) => ipcRenderer.invoke('files:search', sessionId, query),
     read: (sessionId: string, path: string) => ipcRenderer.invoke('files:read', sessionId, path),
     ingest: (paths: string[]) => ipcRenderer.invoke('files:import', paths),
     saveDump: (sessionId: string, files: { path: string; content: string }[]) =>
@@ -118,7 +125,9 @@ const api: CodezyApi = {
   app: {
     version: () => ipcRenderer.invoke('app:version'),
     openExternal: (url: string) => ipcRenderer.invoke('app:openExternal', url),
-    openTerminal: () => ipcRenderer.invoke('app:openTerminal')
+    openTerminal: (sessionId?: string) => ipcRenderer.invoke('app:openTerminal', sessionId),
+    openLogs: () => ipcRenderer.invoke('app:openLogs'),
+    startOllama: () => ipcRenderer.invoke('app:startOllama')
   },
   update: {
     check: () => ipcRenderer.invoke('update:check'),

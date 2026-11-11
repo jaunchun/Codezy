@@ -13,49 +13,53 @@ export interface CommandInfo {
   args: string
   description: string
   phase: 1 | 2 | 3 // helps /help mark what's available already
+  /** Advanced commands stay fully functional but are only listed when
+   *  Advanced features is on (or `/help all`). */
+  advanced?: boolean
 }
 
 export const COMMANDS: CommandInfo[] = [
-  { name: '/help', args: '', description: 'List every command', phase: 1 },
+  { name: '/help', args: '[all]', description: 'List the commands', phase: 1 },
   { name: '/clear', args: '', description: 'Clear the current chat (stays in the session list)', phase: 1 },
   { name: '/new', args: '[project]', description: 'Start a new chat', phase: 1 },
   { name: '/model', args: '[id]', description: 'Show or switch the active model', phase: 1 },
   { name: '/provider', args: '[id|nebius key]', description: 'Switch providers — or connect Nebius Token Factory', phase: 1 },
-  { name: '/effort', args: '<light|medium|deep>', description: 'How much thinking power to spend', phase: 1 },
+  { name: '/effort', args: '<light|medium|deep>', description: 'How much thinking power to spend', phase: 1, advanced: true },
   { name: '/mode', args: '<plan|build|auto>', description: 'plan = advice only · build = you accept edits · auto = apply them', phase: 1 },
   {
     name: '/theme',
-    args: '<dark|light|acrylic|singularity|midnight|ember|mint|slate>',
+    args: '<graphite|paper|contrast|singularity>',
     description: 'Switch the app theme or terminal accent palette',
-    phase: 1
+    phase: 1,
+    advanced: true
   },
   { name: '/copy', args: '[text]', description: 'Copy the last reply to the clipboard', phase: 1 },
-  { name: '/rewind', args: '[n]', description: 'Drop the last messages — step back in this chat', phase: 1 },
-  { name: '/fast', args: '', description: 'Toggle fast mode: effort light ↔ medium', phase: 1 },
-  { name: '/diff', args: '[path]', description: 'Git changes vs HEAD in the linked folder', phase: 3 },
-  { name: '/goal', args: '<text|show|clear>', description: 'Set the active goal the model must follow', phase: 1 },
-  { name: '/btw', args: '<note|show|clear>', description: 'Add a background note that is always in context (not a message)', phase: 1 },
+  { name: '/rewind', args: '[n]', description: 'Drop the last messages — step back in this chat', phase: 1, advanced: true },
+  { name: '/fast', args: '', description: 'Toggle fast mode: effort light ↔ medium', phase: 1, advanced: true },
+  { name: '/diff', args: '[path]', description: 'Git changes vs HEAD in the linked folder', phase: 3, advanced: true },
+  { name: '/goal', args: '<text|show|clear>', description: 'Set the active goal the model must follow', phase: 1, advanced: true },
+  { name: '/btw', args: '<note|show|clear>', description: 'Add a background note that is always in context (not a message)', phase: 1, advanced: true },
   { name: '/compact', args: '', description: 'Trim old history so the 7B context never overflows', phase: 1 },
-  { name: '/learn', args: '<on|off>', description: 'Let CODEZY remember things about you', phase: 1 },
-  { name: '/remember', args: '<fact>', description: 'Teach CODEZY a fact it must never forget', phase: 1 },
-  { name: '/memory', args: '[clear]', description: 'Show (or clear) what CODEZY learned about you', phase: 1 },
-  { name: '/drive', args: '<folder|off>', description: 'Mirror sessions into a Google Drive folder', phase: 1 },
+  { name: '/learn', args: '<on|off>', description: 'Let CODEZY remember things about you', phase: 1, advanced: true },
+  { name: '/remember', args: '<fact>', description: 'Teach CODEZY a fact it must never forget', phase: 1, advanced: true },
+  { name: '/memory', args: '[clear]', description: 'Show (or clear) what CODEZY learned about you', phase: 1, advanced: true },
+  { name: '/drive', args: '<folder|off>', description: 'Mirror sessions into a Google Drive folder', phase: 1, advanced: true },
   { name: '/export', args: '', description: 'Export this chat as Markdown', phase: 1 },
-  { name: '/usage', args: '', description: 'Context window, token counts and session stats', phase: 1 },
-  { name: '/doctor', args: '', description: 'Check the environment: model, endpoint, folder, memory', phase: 1 },
-  { name: '/cost', args: '', description: 'Tokens this chat used — transcript estimate, last reply', phase: 1 },
-  { name: '/skill', args: '<name|off>', description: 'Activate a skill (prompt playbook)', phase: 2 },
+  { name: '/usage', args: '', description: 'Context window, token counts and session stats', phase: 1, advanced: true },
+  { name: '/doctor', args: '', description: 'Check the environment: model, endpoint, folder, memory', phase: 1, advanced: true },
+  { name: '/cost', args: '', description: 'Tokens this chat used — transcript estimate, last reply', phase: 1, advanced: true },
+  { name: '/skill', args: '<name|off>', description: 'Activate a skill (prompt playbook)', phase: 2, advanced: true },
   { name: '/undo', args: '', description: 'Revert the last file edit CODEZY made', phase: 1 },
-  { name: '/history', args: '', description: 'Every backup taken before an edit — restore any point', phase: 1 },
-  { name: '/review', args: '', description: 'Review the pending edits like a code reviewer', phase: 2 },
-  { name: '/search', args: '<query>', description: 'Search the internet (DuckDuckGo, no key)', phase: 3 },
+  { name: '/history', args: '', description: 'Every backup taken before an edit — restore any point', phase: 1, advanced: true },
+  { name: '/review', args: '', description: 'Review the pending edits like a code reviewer', phase: 2, advanced: true },
+  { name: '/search', args: '<query>', description: 'Search the internet (DuckDuckGo, no key)', phase: 3, advanced: true },
   { name: '/add-dir', args: '<folder>', description: 'Link another folder to this chat', phase: 1 },
-  { name: '/init', args: '', description: 'Generate a context file for the linked project folder', phase: 3 },
-  { name: '/archive', args: '', description: 'Archive this chat — hides it until "show archived" is on', phase: 1 },
-  { name: '/pin', args: '', description: 'Pin / unpin this chat to the top of the sidebar', phase: 1 },
-  { name: '/transcript', args: '', description: 'Copy the whole conversation to the clipboard', phase: 1 },
-  { name: '/fontsize', args: '[12..20]', description: 'Show or set the interface font size', phase: 1 },
-  { name: '/density', args: '[cozy|compact]', description: 'Row/padding density of the interface', phase: 1 },
+  { name: '/init', args: '', description: 'Generate a context file for the linked project folder', phase: 3, advanced: true },
+  { name: '/archive', args: '', description: 'Archive this chat — hides it until "show archived" is on', phase: 1, advanced: true },
+  { name: '/pin', args: '', description: 'Pin / unpin this chat to the top of the sidebar', phase: 1, advanced: true },
+  { name: '/transcript', args: '', description: 'Copy the whole conversation to the clipboard', phase: 1, advanced: true },
+  { name: '/fontsize', args: '[12..20]', description: 'Show or set the interface font size', phase: 1, advanced: true },
+  { name: '/density', args: '[cozy|compact]', description: 'Row/padding density of the interface', phase: 1, advanced: true },
   { name: '/update', args: '', description: 'Check GitHub for a newer CODEZY — installs in place', phase: 1 }
 ]
 
@@ -80,9 +84,10 @@ export function parseInput(raw: string): ParsedCommand {
   return { kind: 'command', name, args: (match[3] ?? '').trim() }
 }
 
-export function helpText(): string {
-  const pad = Math.max(...COMMANDS.map((c) => c.name.length))
-  return COMMANDS.map((c) => {
+export function helpText(mode: 'simple' | 'all' = 'all'): string {
+  const visible = mode === 'all' ? COMMANDS : COMMANDS.filter((c) => !c.advanced)
+  const pad = Math.max(...visible.map((c) => c.name.length))
+  return visible.map((c) => {
     const usage = c.args ? `${c.name} ${c.args}` : c.name
     return `${usage.padEnd(pad + c.args.length + 1)}  ${c.description}`
   }).join('\n')
@@ -94,6 +99,10 @@ export function isEffort(v: string): v is EffortLevel {
 
 /** Every theme, in palette order — surfaces first, terminal accents after. */
 export const THEME_NAMES: ThemeName[] = [
+  'graphite',
+  'paper',
+  'contrast',
+  // legacy (accepted forever, fall back to graphite/paper)
   'dark',
   'light',
   'acrylic',
@@ -108,15 +117,15 @@ export function isTheme(v: string): v is ThemeName {
   return (THEME_NAMES as string[]).includes(v)
 }
 
-/** Which surface a theme paints: terminal palettes ride on the dark base. */
-export function themeBase(v: ThemeName): 'dark' | 'light' | 'acrylic' | 'singularity' {
-  if (v === 'light') return 'light'
-  if (v === 'acrylic') return 'acrylic'
+/** Which surface a theme paints. Singularity keeps its black-hole surface. */
+export function themeBase(v: ThemeName): 'graphite' | 'paper' | 'contrast' | 'singularity' {
   if (v === 'singularity') return 'singularity'
-  return 'dark'
+  if (v === 'light' || v === 'paper') return 'paper'
+  if (v === 'contrast') return 'contrast'
+  return 'graphite'
 }
 
-/** Which accent palette a theme uses — the surfaces keep midnight blue. */
-export function themePalette(v: ThemeName): 'midnight' | 'ember' | 'mint' | 'slate' {
-  return v === 'ember' || v === 'mint' || v === 'slate' ? v : 'midnight'
+/** Which accent palette a legacy surface uses — 3.2.0 always starts cobalt. */
+export function themePalette(v: ThemeName): 'lime' | 'blue' | 'amber' | 'magenta' {
+  return 'blue'
 }

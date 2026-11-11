@@ -90,6 +90,174 @@ export function readFileIn(roots: string[], target: string): string | null {
   }
 }
 
+// -- find in files ----------------------------------------------------------
+
+const MAX_SEARCH_FILES = 12_000 // files read per search
+const MAX_SEARCH_HITS = 400 // matches returned
+const MAX_SEARCH_PER_FILE = 25 // one minified file can't eat the whole list
+const MAX_SEARCH_BYTES = 1_500_000 // bigger files are skipped (lockfiles, dumps)
+const MAX_SEARCH_TOTAL_BYTES = 40_000_000 // whole search stops after this much text
+const MAX_PREVIEW = 220 // characters of line context shown per hit
+
+/** Binary and asset formats that are never worth scanning as text. */
+const BINARY_EXT = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.svg', '.avif', '.tif', '.tiff',
+  '.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac',
+  '.mp4', '.mov', '.avi', '.mkv', '.webm', '.wmv',
+  '.zip', '.gz', '.7z', '.rar', '.tar', '.bz2', '.xz',
+  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+  '.exe', '.dll', '.so', '.dylib', '.bin', '.wasm', '.class', '.o', '.a', '.lib',
+  '.woff', '.woff2', '.ttf', '.otf', '.eot',
+  '.sqlite', '.db', '.mdb', '.pyc', '.pyo', '.node'
+])
+
+export interface FileSearchHit {
+  /** Absolute path — what the cowork editor opens. */
+  path: string
+  /** Path relative to its linked folder — what the list shows. */
+  name: string
+  /** 1-based line number. */
+  line: number
+  /** 1-based column of the match in the real line — the editor selection. */
+  column: number
+  /** 1-based column of the match inside the trimmed `text` preview. */
+  previewColumn: number
+  /** Match length in characters (the editor selects exactly this much). */
+  length: number
+  /** Trimmed, capped line excerpt around the match. */
+  text: string
+}
+
+export interface FileSearchResult {
+  hits: FileSearchHit[]
+  /** Files whose contents were read. */
+  scanned: number
+  /** A cap stopped the walk — the list is a prefix, not the whole project. */
+  truncated: boolean
+}
+
+/** True when a buffer looks binary (NUL byte or a known asset extension). */
+function looksBinary(file: string, buf: Buffer): boolean {
+  if (BINARY_EXT.has(path.extname(file).toLowerCase())) return true
+  const head = Math.min(buf.length, 8000)
+  for (let i = 0; i < head; i++) if (buf[i] === 0) return true
+  return false
+}
+
+/** One line excerpt, capped around the match, trimmed for display. */
+function excerpt(line: string, at: number): { text: string; previewColumn: number } {
+  let start = 0
+  let end = line.length
+  if (line.length > MAX_PREVIEW) {
+    start = Math.max(0, at - Math.floor(MAX_PREVIEW / 2))
+    end = Math.min(line.length, start + MAX_PREVIEW)
+    if (end === line.length) start = Math.max(0, end - MAX_PREVIEW)
+  }
+  let text = line.slice(start, end)
+  const lead = text.length - text.trimStart().length
+  text = text.trim()
+  return { text, previewColumn: Math.max(1, at - start - lead + 1) }
+}
+
+/**
+ * Case-insensitive literal search across the linked folders (v3.1 Find in
+ * files). One hit per line, shallow-first within each folder, with hard caps
+ * on files read, hits returned and bytes per file so a node_modules-shaped
+ * project can never hang the main process.
+ */
+export function searchFiles(roots: string[], query: string): FileSearchResult {
+  const needle = query.trim().toLowerCase()
+  if (needle.length < 2) return { hits: [], scanned: 0, truncated: false }
+
+  const hits: FileSearchHit[] = []
+  let scanned = 0
+  let bytes = 0
+  let truncated = false
+
+  const walk = (root: string, dir: string, depth: number): void => {
+    if (hits.length >= MAX_SEARCH_HITS) {
+      truncated = true
+      return
+    }
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    entries.sort((a, b) => (a.isDirectory() === b.isDirectory() ? a.name.localeCompare(b.name) : a.isDirectory() ? -1 : 1))
+
+    for (const e of entries) {
+      if (hits.length >= MAX_SEARCH_HITS) {
+        truncated = true
+        return
+      }
+      if (scanned >= MAX_SEARCH_FILES) {
+        truncated = true
+        return
+      }
+      if (e.isDirectory()) {
+        if (depth < 40 && !SKIP_DIRS.has(e.name) && !e.name.startsWith('.')) walk(root, path.join(dir, e.name), depth + 1)
+        continue
+      }
+      if (!e.isFile() || BINARY_EXT.has(path.extname(e.name).toLowerCase())) continue
+
+      const full = path.join(dir, e.name)
+      let buf: Buffer
+      try {
+        const st = fs.statSync(full)
+        if (st.size > MAX_SEARCH_BYTES) continue
+        if (bytes + st.size > MAX_SEARCH_TOTAL_BYTES) {
+          truncated = true
+          return
+        }
+        buf = fs.readFileSync(full)
+        bytes += st.size
+      } catch {
+        continue
+      }
+      scanned++
+      if (looksBinary(full, buf)) continue
+
+      const rel = path.relative(root, full).split(path.sep).join('/')
+      const lines = buf.toString('utf8').split(/\r?\n/)
+      let inFile = 0
+      for (let i = 0; i < lines.length && inFile < MAX_SEARCH_PER_FILE; i++) {
+        const at = lines[i].toLowerCase().indexOf(needle)
+        if (at === -1) continue
+        if (hits.length >= MAX_SEARCH_HITS) {
+          truncated = true
+          break
+        }
+        const view = excerpt(lines[i], at)
+        hits.push({
+          path: full,
+          name: rel,
+          line: i + 1,
+          column: at + 1,
+          previewColumn: view.previewColumn,
+          length: needle.length,
+          text: view.text
+        })
+        inFile++
+      }
+      if (hits.length >= MAX_SEARCH_HITS) truncated = true
+    }
+  }
+
+  for (const r of roots) {
+    const root = path.resolve(r)
+    walk(root, root, 1)
+    if (truncated || hits.length >= MAX_SEARCH_HITS) {
+      truncated = true
+      break
+    }
+  }
+
+  hits.sort((a, b) => a.name.localeCompare(b.name) || a.line - b.line || a.column - b.column)
+  return { hits, scanned, truncated }
+}
+
 // -- IDE pane (v1.5): cowork the linked folders side by side with the agent --
 
 export interface IdeNode {

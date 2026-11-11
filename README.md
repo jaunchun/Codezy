@@ -3,9 +3,12 @@
 > **Claude Code–style chat for your models — local first, cloud ready.**
 > An Electron desktop client that talks to **Ollama** running on your machine (or any
 > OpenAI-compatible API), with a coding agent that can read and edit files, run commands,
-> search the web and keep todos — plus a matching terminal TUI.
+> search the web and keep todos — plus a matching terminal agent.
 
-![version](https://img.shields.io/badge/version-3.0.0-3d9bff) ![license](https://img.shields.io/badge/license-MIT-green) ![tests](https://img.shields.io/badge/tests-1184%20checks%20%C2%B7%2025%20batches-brightgreen) ![electron](https://img.shields.io/badge/Electron-44-9fe8ff)
+![version](https://img.shields.io/badge/version-3.2.0-6FA8FF) ![license](https://img.shields.io/badge/license-MIT-green) ![tests](https://img.shields.io/badge/tests-2366%20checks%20%C2%B7%2052%20batches-brightgreen) ![electron](https://img.shields.io/badge/Electron-44-9fe8ff)
+
+> **Field manual:** open [`docs/index.html`](docs/index.html) — models, agent mode, the CLI, and 37
+> known errors with a fix for each. Self-contained; works offline.
 
 ---
 
@@ -25,6 +28,10 @@
 - [Where your data lives](#where-your-data-lives)
 - [Development & testing](#development--testing)
 - [Troubleshooting](#troubleshooting)
+- [What's new in 3.2.0](#whats-new-in-320)
+- [What's new in 3.1.7](#whats-new-in-317)
+- [What's new in 3.1.6](#whats-new-in-316)
+- [What's new in 3.1.5](#whats-new-in-315)
 - [What's new in 3.1.3](#whats-new-in-313)
 - [What's new in 3.1.2](#whats-new-in-312)
 - [What's new in 3.1.1](#whats-new-in-311)
@@ -49,7 +56,7 @@
 | **Cowork pane** | Press **Ctrl+E**: browse the chat's linked folder, open files side-by-side with the conversation, and watch the AI cursor move as the agent writes. |
 | **Modes** | **plan** (advice only) · **build** (you accept every edit) · **auto** (edits apply immediately, always backed up). Effort: **light / medium / deep**. |
 | **Safe edits** | Every apply is previewed as a real diff and backed up first — review it **hunk by hunk** and keep exactly the changes you want; one `/undo` reverts the batch. |
-| **MCP** | Add any stdio **Model Context Protocol** server in Settings → MCP servers; its tools join the agent as `mcp__server__tool` in build mode — one broken server never blocks a run. |
+| **MCP** | Add any stdio **Model Context Protocol** server in Settings → Tools → MCP servers; its tools join the agent as `mcp__server__tool` in build mode — one broken server never blocks a run. |
 | **Images** | Attach screenshots to a chat — capable models (local Ollama vision models, OpenAI-compatible endpoints) actually **see** them. |
 | **Edit history** | `/history` lists every safety copy taken before an edit; restore any point in time (confinement and a binary guard included). |
 | **Updates** | Checks **GitHub** for a newer CODEZY and installs it **in place** — a small pill in the top bar, a percentage while it downloads, and no second app. |
@@ -57,8 +64,8 @@
 | **Boot animation** | The CODEZY logo pops in on startup and flies onto its perch in the title bar. |
 | **Sessions** | Chat sidebar with per-chat linked folders, resume, export to Markdown, `/rewind` step-back, clipboard copy. |
 | **Memory & skills** | `# fact` or `/remember` pins facts to `memory.md`; `/skill` activates prompt playbooks from the skills folder. |
-| **Command palette** | **Ctrl+K** for commands and actions, **Ctrl+U** for the usage dashboard (context, tokens, 12-week heatmap). |
-| **Themes** | Dark · Light · **Acrylic** (Windows blur) plus midnight / ember / mint / slate palettes; accent color, font size, reduced motion. |
+| **Command palette** | **Ctrl+K** for the simple action and command list; **Ctrl+U** opens the usage dashboard when Advanced features is on. |
+| **Themes** | **Graphite** (the default), **Paper**, **Contrast** and **Singularity**; cobalt signal accent plus lime / amber / magenta, font size, reduced motion. |
 | **Terminal TUI** | The same brain in your terminal: `codezy` — 33 slash commands, resume saves, image attach, vim mode. |
 
 ---
@@ -87,8 +94,8 @@ Ollama is the local engine that runs the models. **Download it from <https://oll
 | OS | How |
 | --- | --- |
 | **Windows** | Get the installer from <https://ollama.com/download/windows>, **or** in a terminal: `winget install Ollama.Ollama` |
-| **macOS(not supported yet)** | Download the `.dmg` from <https://ollama.com/download/mac>, **or**: `brew install --cask ollama` |
-| **Linux(not supported yet)** | `curl -fsSL https://ollama.com/install.sh \| sh` |
+| **macOS** | Download the `.dmg` from <https://ollama.com/download/mac>, **or**: `brew install --cask ollama` |
+| **Linux** | `curl -fsSL https://ollama.com/install.sh \| sh` |
 
 Verify:
 
@@ -108,7 +115,7 @@ CODEZY's default model is **`qwen2.5-coder:7b`** (~4.7 GB download; 8 GB RAM min
 ollama pull qwen2.5-coder:7b
 ```
 
-Any other Ollama model works too — pick it later in **Settings → model** or with `/model`.
+Any other Ollama model works too - pick it later in **Settings → Models** or with `/model`.
 Want a cloud model instead? Skip this step and connect a provider during setup.
 
 ### 4. Install and build CODEZY
@@ -129,13 +136,14 @@ For day-to-day development:
 npm run dev        # dev server with hot reload
 ```
 
-Prefer the terminal companion? No build needed:
+Prefer the terminal companion? It ships as its own package (`codezy-cli`):
 
 ```powershell
-node cli\index.mjs        # Windows
-node cli/index.mjs        # macOS / Linux
-# or make it global once:  npm link   →   codezy
+npm i codezy-cli          # add -g to put codezy on your PATH
 ```
+
+The [CLI home page](https://github.com/jaunchun/codezy-cli#readme) covers setup,
+commands and flags.
 
 ---
 
@@ -166,7 +174,7 @@ node cli/index.mjs        # macOS / Linux
 - **Edits** — in build/auto mode the agent proposes file edits: open the preview to read
   the diff, then **Accept**, **Always** or **Decline** (`Ctrl+Enter` accepts while the
   preview is open). Everything is backed up first, `/undo` reverts the last batch.
-- **Commands** — type `/` in the composer for suggestions. Highlights:
+- **Commands** — type `/` in the composer for suggestions. The simple surface is 12 core commands; `/help all` (or Settings → Advanced features) reveals the rest. Highlights:
 
   | Command | Does |
   | --- | --- |
@@ -186,10 +194,10 @@ node cli/index.mjs        # macOS / Linux
 | --- | --- |
 | `Ctrl+N` | New chat |
 | `Ctrl+K` | Command palette |
-| `Ctrl+E` | Show / hide the cowork pane |
+| `Ctrl+E` | Show / hide the cowork pane (Advanced features) |
 | `Ctrl+B` | Show / hide the sidebar (focus mode) |
 | `Ctrl+,` | Settings |
-| `Ctrl+U` | Usage dashboard |
+| `Ctrl+U` | Usage dashboard (Advanced features) |
 | `Ctrl+F` | Find in chat |
 | `Ctrl+Enter` | Accept edits (when the preview is open) |
 | `Ctrl+/` | Shortcut cheat sheet |
@@ -202,46 +210,57 @@ While a reply streams, the composer's send button turns into **Stop** (also avai
 
 ## Settings
 
-**Ctrl+,** — highlights:
+**Ctrl+,** opens four categories in the simple UI. Advanced features adds **Tools** and **Data**:
 
-- **Appearance** — theme (dark / light / acrylic), accent color, font size, reduce motion.
-- **Engine** — Ollama URL, active provider, active model, effort default, mode
-  (plan / build / auto).
-- **Providers** — connect Nebius Token Factory, OpenRouter, LM Studio, or any custom
-  OpenAI-compatible endpoint (base URL + API key).
-- **Behavior** — Enter sends, notify when a reply finishes, auto-continue truncated code.
-- **Learning & memory** — toggle learning and edit `memory.md` directly.
-- **Data folder** — where sessions, memory and skills live; **Run setup** re-opens the
-  welcome wizard.
+- **General** — profile name, the simple/advanced switch, theme (graphite / paper / contrast / singularity), accent color, font size,
+  reduce motion, window and tray behavior, notifications, Enter-to-send, logs folder.
+- **Models** — Ollama URL, active provider and model, provider keys for Nebius Token
+  Factory, OpenRouter, LM Studio or any OpenAI-compatible endpoint, plus the
+  supported-model guide.
+- **Agent** — reply mode (plan / build / auto), effort default, auto-continue,
+  and project instructions.
+- **Tools** *(advanced)* — MCP servers: add a stdio server, see its status, tools and failures.
+- **Data** *(advanced)* — data folder, learning and `memory.md`, backup / export / import.
+- **About** — version and update checks.
+
+Every control from the old single page is still present; the palette’s Settings jumps
+open the right category before scrolling.
 
 ---
 
 ## Terminal companion (CLI)
 
-The same agent, in your terminal — no build required:
+The same agent, in your terminal — its own package
+([`codezy-cli`](https://github.com/jaunchun/codezy-cli)) and its own repo, so it
+needs no Electron build. One install puts `codezy` on your PATH —
+**Windows, macOS and Linux**. `codezy` opens one unified REPL with four modes;
+its only runtime dependency is
+[`nanospinner`](https://www.npmjs.com/package/nanospinner) for the live phase
+line. The desktop app's **Open terminal interface** launches this same REPL,
+bundled with the installer.
 
-```powershell
-node cli\index.mjs
+```bash
+npm i codezy-cli               # add -g to put codezy on your PATH
+
+codezy --help                  # one screen: usage, options, agent commands, exit codes
+codezy doctor                  # node · package · settings · endpoint · model · hooks · mcp · git
+codezy doctor --json           # the same report as one machine-readable line (CI/scripts)
 ```
 
-The CLI is also its **own npm package** (`cli/package.json`, zero dependencies — Node
-builtins only), so one install puts `codezy` on your PATH:
-
-```powershell
-npm install -g .\cli      # from the repo — or: npm install -g ./cli
-codezy --help             # one screen: usage, options, agent commands, exit codes
-codezy doctor             # node · package · settings · endpoint · model · hooks · mcp · git
-```
+Full command, option and REPL reference:
+[the CLI home page](https://github.com/jaunchun/codezy-cli#readme).
 
 - Shares settings, memory and sessions with the desktop app.
-- `/help` lists all **33 commands**: `/resume` / `/open` (terminal saves + app chats),
-  `/save`, `/link <dir>`, `/apply`, `/diff`, `/vim`, `/theme`, `/btw`, `/compact`,
-  `/usage`, `/doctor`, `/quit` and more. The v2 agent REPL (`codezy --agent`, or
-  `node cli/codezy-v2.mjs`) adds `/root`, `/todos`, `/mcp`, `/search <q>` (instant web
-  search, no model), `/model <id>` (switch mid-session), `/tools` (everything the agent
-  can call), `/auto [on|off]` (toggle auto-approval) and `/export [f]` (save the
-  conversation to markdown). TAB completes every command, and a spinner holds the line
-  while the model thinks.
+- `/help` lists every command: `/resume` / `/open` (terminal saves + app chats),
+  `/save`, `/link <dir>`, `/apply`, `/diff`, `/theme`, `/mode`, `/model`,
+  `/root`, `/todos`, `/mcp`, `/tools`, `/export`, `/doctor`, `/exit` and more.
+  TAB completes every command.
+- `/mode` switches between **chat**, **agent**, **plan** and **auto** in place;
+  `--chat`, `--plan` and `--auto` start there directly.
+- A `nanospinner` braille phase line (`⠋ › run command npm test…`) holds the
+  bottom while the model works — the live phase, elapsed seconds after two, and
+  frames dropped while you type or answer an approval. There are no step
+  counters; the activity ledger is the order.
 - The agent can **`web_fetch`** a URL a search surfaced — HTML is stripped to prose,
   `maxChars` caps it, http(s) only.
 - Drop an image path into a message and it attaches (`📷 1 image attached`).
@@ -302,10 +321,333 @@ foreach ($n in 1..21) {
 | Sidebar says **Ollama offline** | The dot refreshes every few seconds, and the next message starts the engine itself. Or start it manually with `ollama serve`, or check the URL in **Settings** (default `http://127.0.0.1:11434`). |
 | **Model not found** | `ollama pull qwen2.5-coder:7b` (or switch model with `/model`). |
 | Port already in use | Something else owns `11434` — either use it (set the same URL in Settings) or stop it and let Ollama take the port. |
-| Reply stops mid-code | Auto-continue finishes truncated replies (Settings → behavior); or just say “continue”. |
+| Reply stops mid-code | Auto-continue finishes truncated replies (Settings → Agent); or just say "continue". |
 | Cloud provider won't connect | Re-enter the key in Settings (`/provider nebius <key>` in the CLI), and confirm your account has credit. |
-| Editor feels busy | Settings → appearance → **reduce motion**. |
+| Editor feels busy | Settings → General → **reduce motion**. |
 | Need a health check | Run `/doctor` — endpoint, model, folder, memory at a glance. |
+
+---
+
+## What's new in 3.2.0
+
+- **A quieter desktop, restyled end to end.** "Graphite Signal" replaces the
+  old glass-and-glow surfaces: layered graphite, warm off-white type, hairline
+  rules, one cobalt signal colour and no bloom. Layout, navigation, shortcuts
+  and behaviour are unchanged — this is a visual pass.
+
+- **Four themes, one picker.** **Graphite** is the new default, **Paper** is the
+  warm light surface, **Contrast** is for bright rooms, and **Singularity**
+  stays selectable with its black-hole backdrop and obsidian tokens. Cobalt is
+  the default accent; lime, amber and magenta remain.
+
+- **One CLI REPL.** `codezy` now opens the same agent REPL as `--agent`: one
+  prompt, four modes (`/mode` → chat, agent, plan, auto), the same flags and
+  file formats. The banner, help screen, activity ledger and stat line were
+  rebuilt for 3.2.0.
+
+- **`/settings` is a live screen, not a poster.** Every row that can change is
+  numbered; type the number, pick from the choices, and the change lands
+  immediately — theme, accent, thinking, model, fast model, mode, approvals and
+  the workspace root. It runs the very same slash commands the panel
+  advertises, so the screen and the commands can never disagree. In a pipe it
+  stays the read-only map, because a script's next line is data, not an answer.
+
+- **The home screen names the project.** The banner shows the workspace folder
+  (`codezy-cli`) instead of the whole path — a home screen should say where you
+  are, not print your directory tree. `/root` still shows the full path.
+
+- **The spinner is nanospinner, visibly.** A cobalt braille phase line
+  (`⠋ › thinking`, `⠋ › run command npm test`) replaces the step labels; the
+  elapsed time appears after two seconds and frames drop while you type. There
+  is no "step 3" anywhere — the activity ledger is the order.
+
+- **The desktop button runs it.** **Open terminal interface** now launches the
+  bundled `index.mjs` REPL instead of the legacy TUI; `codezy.mjs` remains as a
+  fallback. The installer carries the CLI, its `src/` tree and nanospinner, so
+  it works without a global npm install.
+
+- **Nothing lost.** Every CLI flag, slash command, output format and settings
+  file still works; piped output stays ANSI-free unless colour is forced.
+
+The 3.1.7 notes below stay untouched as history.
+
+---
+
+## What's new in 3.1.7
+
+- **The updater finds the release again.** A release whose installer is named
+  `CODEZY-Setup.exe` now takes its version from a semver tag (`3.1.7`) instead
+  of being skipped, so the GitHub release and the app agree. This is the
+  mismatch that made 3.1.5 report itself as the latest version while 3.1.6 was
+  already published.
+
+- **One toast, not a wall.** Repeated "check now" or `/update` runs no longer
+  stack identical notices — the message already on screen is the only copy.
+
+- **Simple by default.** The app now opens with the 12 commands most people
+  actually use: `/help`, `/clear`, `/new`, `/model`, `/provider`, `/mode`,
+  `/copy`, `/compact`, `/undo`, `/export`, `/add-dir`, `/update`. The palette,
+  Settings, composer, sidebar and title bar keep only the essentials; token
+  meters, thinking/web controls, Projects, Drive, cowork/preview, the terminal
+  entry, the MCP/storage/memory panes and 24 extra commands are hidden.
+
+- **Nothing was removed.** One switch brings it all back: Settings → General →
+  **Advanced features**. In a chat, `/help all` lists every command. Hidden
+  advanced commands still parse and run exactly as before.
+
+- **Live edits — watch the agent code.** A new panel streams the agent's file
+  edits the moment it starts writing them, diff by diff, before you accept
+  anything; a blinking caret marks the exact line being written. It opens by
+  itself on the first edit (close it and it stays closed until you reopen it),
+  shares its slot with the cowork/preview panes, and is always reachable from
+  the title bar or the palette ("Live edits") — it's a core feature, so it
+  stays visible in simple mode.
+
+The updater changes are independent of the UI simplification and the live
+edits panel; the agent, models and CLI behaviour are unchanged. The 3.1.6 notes
+below stay untouched as history.
+
+---
+
+## What's new in 3.1.6
+
+- **The CLI has a home page now.** [`cli/README.md`](cli/README.md) was rebuilt
+  as a package page rather than an appendix: badges, a three-command quickstart,
+  a terminal still, an honest chat-vs-agent table, the spinner explained, every
+  command and flag, approvals, REPL reference, CI contract, doctor table and
+  privacy notes. The npm page is the first thing a new user sees; it now says
+  what CODEZY is in one screen.
+
+- **The spinner gets top billing.** The agent REPL's
+  [`nanospinner`](https://www.npmjs.com/package/nanospinner) line is documented
+  as part of the interface, not apologised for: it names the live phase
+  (`thinking`, `read file …`, `run command …`), adds elapsed seconds after two,
+  drops frames while you are typing or answering an approval, writes to stderr
+  and stays off in pipes. It drives the loop itself instead of `start()`, so
+  Ctrl+C still interrupts a turn. The chat TUI keeps its own zero-dependency
+  spinner.
+
+- **The terminal banner names the build.** The agent REPL header now reads
+  `CODEZY v2 · 3.1.6`, and `codezy --agent --preview` includes a sample phase
+  line — the design sheet shows the spinner, not just the boxes around it.
+
+- **Package identity and manual are 3.1.6.** Root and CLI manifests, both
+  lockfiles, the installer filename and the field manual all report 3.1.6. The
+  manual's Terminal section now explains the spinner. 3.1.4 stays skipped and
+  the 3.1.5 notes below remain untouched as history.
+
+Nothing in the harness moved: prompts, tools, approvals and model routing are
+unchanged. This release is about making the terminal surface as considered as
+the app around it.
+
+---
+
+## What's new in 3.1.5
+
+- **Thinking mode: a button for hard problems.** The composer now has a
+  **Thinking** toggle (the CLI equivalent is `/thinking on|off`). On top of
+  whatever effort chip is selected it shifts sampling to the careful end,
+  adds a reason-first contract to the prompt (restate → plan → consider the
+  alternative → verify before answering), and in agent mode doubles the tool
+  step budget. It persists in settings, so the mode survives restarts —
+  flip it when a task deserves care instead of speed.
+
+- **The agent can ask you questions.** A new `ask_user` tool lets the model
+  pause mid-task and ask ONE focused clarifying question when requirements
+  are genuinely ambiguous — the chain literally parks until you type your
+  answer (options included), and Ctrl+C skips the question with "you
+  decide". One-shot/print runs get an instant "no user here" stub, so
+  headless automation never hangs, and thinking mode tells the model to ask
+  instead of guessing.
+
+- **You can always see what it's doing.** The terminal spinner now names
+  the live phase — `step 3: thinking`, `step 3: run_command npm test…` —
+  and a dim stat line closes every run (`✓ 5 step(s) · 12041 tokens · 43s`).
+  The app's agent mode streams the same live activity ("thinking…" /
+  "running grep…") as it happens, not just when a step finishes.
+
+- **A visual round, in the singularity's own language.** The app's live
+  agent rail now shows the step number and pulses with the phase — slow
+  while the model thinks, quick while a tool runs — with a slow pass of
+  light along it, like the accretion disk in miniature. The Thinking chip
+  breathes when it is lit, a fresh chat opens on a thin arc of light
+  orbiting the mark, code blocks carry a hairline of light along their top
+  edge, and the sidebar's section labels read as ruler marks while the
+  active row wears a rail of white. Modals, popovers and toasts become
+  obsidian panels with a line of light along their top edge, the scrim
+  behind them deepens, and GFM tables, task lists, quotes and rules in a
+  reply finally look like they belong to the app instead of the browser.
+  In the singularity theme the title bar gets a horizon and the wordmark a
+  faint bloom — all monochrome, all transform-only, and every motion stands
+  still when reduced motion is on.
+
+- **A real reading experience.** Replies now have a proper type scale —
+  headings that step down cleanly, a calmer reading rhythm, quieter list
+  markers, and links that look like links. A fresh chat opens on a
+  composed welcome: the mark under a ring of light, the wordmark set wide
+  and light, a one-line tagline, four starter cards that lift and light
+  their top edge, and a row of keyboard hints. Messages arrive with a
+  whisper of motion instead of blinking in, and a breath of light sits
+  behind the conversation column.
+
+- **The terminal got the same treatment as the app.** The agent REPL now
+  opens with a bordered header card — model, endpoint, context, tools,
+  fast model, thinking mode, workspace — instead of a flat line, a run
+  reads as a ledger (`1 ⎿ read file   src/main/index.ts · 143 lines ·
+  118ms`), a question the model asks you arrives in its own framed card,
+  `/help` is laid out in aligned sections, and the prompt itself shows
+  the mode (`you> `, or `you* ` while thinking). `codezy v2 --preview`
+  prints the whole terminal chrome with no model and no session, so the
+  look can be reviewed on its own.
+
+- **The look, in every theme.** The horizon under the title bar, the seam
+  of light above the composer, the lit active row in the sidebar, the
+  breath of light behind the conversation column, the glowing send button
+  and the Thinking chip all follow each theme's **own** accent now — so
+  the acrylic, dark and light surfaces get the same craft as the black
+  hole, instead of looking like the app didn't change. (And the
+  singularity theme is where the whole thing is designed to live: the
+  ray-traced black hole, obsidian panels, the mark under its ring of
+  light.)
+
+- **The web actually works now.** DuckDuckGo was answering the agent with
+  an anti-bot page that parsed as "no results" — that is why searching
+  came up empty. It now speaks to the engine like a browser, falls back to
+  key-free sources when it is rate-limited, digs the line that holds the
+  answer out of the pages, and **labels** it, so a 7B model quotes the
+  live value instead of the release it remembers. The normal chat (which
+  has no tools) searches for the model and says so in the chat; the
+  composer's **web** chip switches between auto, always and off.
+
+- **A live preview of the site you're building.** The chat's folder is
+  served over its own scheme, so the preview is the real site — relative
+  CSS, JS and images resolve — and it reloads the moment the agent writes
+  a file. It also takes a dev-server URL, and it frames the page at
+  desktop, tablet or phone width.
+
+- **"Open terminal interface" works in the installed app.** The chat TUI
+  now ships with CODEZY (outside the asar, node builtins only), so the
+  button opens the real terminal agent in your project folder — no npm
+  install, no asar path errors. The agent REPL is still its own package.
+
+- **The agent harness got faster, tougher, and remembers more.** Read-only
+  tools (dir listings, file reads, greps, globs, web lookups) now run
+  concurrently instead of one-by-one, transient network errors retry with
+  backoff instead of failing the turn, and every run reports its token
+  usage. The v2 REPL gained an elapsed-time spinner, `a=always` approval
+  previews, session saves under `~/.codezy/agent/` with `/resume` and
+  `-c/--continue`, automatic `/compact` past 60% of context, `/usage`, and
+  Ctrl+C that interrupts cleanly without losing the chain.
+
+- **Two models, one session — built for long coding sessions.** A "fast"
+  model role (`/model fast <id>`, or `fastModel` in settings) takes the
+  cheap work — conversation summaries during `/compact` and every scout run
+  — so the main model keeps its context for real coding. `/scout
+  <question>` is a read-only research run in fresh context: it can list,
+  read, grep and search but never writes, and files its digest back into
+  the conversation. A stall watchdog now streams from Ollama and retries a
+  wedged generation after 90 seconds of silence instead of hanging
+  forever, cloud calls get a 10-minute ceiling, and the agent can't
+  declare "done" while a checklist item is still in progress — it gets
+  pushed back into the loop (twice max, never a nag-loop).
+
+- **The composer stays live while the model talks** (terminal chat). Type
+  during a reply: slash commands stop the reply and run, plain lines queue
+  and auto-send after (`· 1 queued` shows in the progress row), Esc still
+  stops the stream, Shift+Enter breaks a line — and keys are never eaten
+  between turns anymore. Fast typing over a pipe no longer swallows the
+  first keystrokes.
+
+- **Windows, macOS, Linux.** The app now builds for all three (dmg/zip and
+  AppImage/deb targets alongside the Windows installer), "Open terminal
+  interface" follows a real per-OS plan (Windows Terminal → cmd, Terminal.app
+  on macOS, x-terminal-emulator → gnome-terminal → konsole → xfce4-terminal →
+  xterm on Linux) with a visible "tried these" error instead of a silent
+  no-op, `launch.sh` starters ship for both roots, and the updater picks the
+  asset for YOUR platform — off Windows it opens the release page rather
+  than trying to run an .exe.
+
+- **The window remembers itself.** Position, size and maximized state are
+  restored on every launch, sanitized against the monitors that exist now —
+  an unplugged display can never strand the window off-screen, and the title
+  strip always keeps a grabbable edge.
+
+- **A tray icon, and it stays running.** Settings → General → Appearance & window makes ✕ hide CODEZY
+  into a tray icon (first time, a balloon tells you where it went;
+  left-click toggles the window, right-click quits). Startup launches CODEZY
+  at login, optionally straight into the tray with no window flash.
+
+- **Zoom that sticks, and a window that stays put.** Ctrl/Cmd +/−/0 scales
+  the whole interface live and the level survives restarts; Settings →
+  General → Always on top keeps the chat above your editor.
+
+- **One click starts the engine.** The sidebar's offline dot is now a
+  button — click it to boot `ollama serve` from inside the app, with a
+  status notice when it answers, instead of hunting for a terminal.
+
+- **Finished replies are one click away.** With notifications on, clicking
+  the OS notification focuses CODEZY immediately.
+
+- **Crashes leave a paper trail.** The main log (`~/.codezy/logs/main.log`)
+  records launches, hangs and renderer crashes with 512 KiB rotation; a
+  crashed renderer reloads itself (capped) instead of leaving a dead
+  window; Settings → General → Diagnostics opens the logs folder.
+
+- **`codezy://` deep links.** The app registers its own protocol — opening
+  a `codezy://` URL focuses the window and logs the request (session
+  targeting lands later).
+
+- **`codezy doctor --json`.** The health check can print one
+  machine-readable line — version, endpoint, model, and every check with
+  its status — for CI and scripts; the human report is unchanged, and
+  `--help` documents the flag.
+
+- **Agent mode is on by default — and only when it can work.** Existing
+  settings migrate once (`agentModeMigrated`). A folder-linked chat asks
+  Ollama `/api/show` what the selected model can do before any tools
+  schema is attached. A completion-only model such as `codellama:13b`
+  now falls back to classic edit blocks with the real folder contents and
+  a plain notice, instead of `Ollama error 400: … does not support tools`.
+  The composer badges models **tools** or **chat only**, and Settings
+  gains a supported-model guide with RAM guidance and pull commands.
+
+- **The prompt states the setup twice.** A setup card in the system
+  prompt and a synthetic turn immediately before your question repeat the
+  linked folder, edit mode, web mode and model limits — small models
+  weight the newest turn most heavily. Classic chat now receives the real
+  text-file contents, not just a tree, while secrets, binaries and
+  `node_modules` are skipped.
+
+- **Errors read like instructions.** Every error toast is reduced to
+  **what happened** and **what to do**; the raw engine text lives under
+  **Technical details**, with an explicit close button and no truncated
+  useful part. “That path is outside the folders linked to this chat” now
+  names the boundary instead of dumping a JSON payload.
+
+- **No more repeated-tool spirals.** The shared harness skips a third
+  consecutive identical read-only call and gives the model one tool-free
+  turn to answer from the evidence it already has. Live `qwen2.5-coder:7b`
+  now reports the current Ollama release and URL in six steps instead of
+  fetching the same page until the iteration cap.
+
+- **Settings is a map now, not a long scroll.** Six categories — General,
+  Models, Agent, Tools, Data and About — hold every control from the old
+  page. Notifications and input sit in General, the supported-model guide in
+  Models, MCP under Tools; the original section labels remain, and every
+  deep link or Ctrl+K jump opens its category before scrolling.
+
+- **The terminal explains itself.** `codezy --help`, `codezy exec --help`
+  and `codezy doctor --help` print command-specific pages with aligned
+  options, a short “what it does”, and exit codes. The REPL banner reports
+  the selected model’s capability from Ollama `/api/show`; `/model`
+  re-probes after a switch.
+
+- **A field manual you can navigate.** [`docs/index.html`](docs/index.html)
+  now opens as three columns — the eight categories, the guide, and “On
+  this page” — with one search field over section titles, subheadings and
+  all 37 errors. The catalogue is still collapsed by default, each entry
+  still has a cause and a fix, and the page is still dark-only,
+  dependency-free and `file://` safe.
 
 ---
 

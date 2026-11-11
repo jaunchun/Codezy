@@ -9,10 +9,13 @@ import SetupScreen from './components/SetupScreen'
 import ToastStack from './components/ToastStack'
 import Palette from './components/Palette'
 import SearchOverlay from './components/SearchOverlay'
+import FindInFiles from './components/FindInFiles'
 import ApproveModal from './components/ApproveModal'
 import Shortcuts from './components/Shortcuts'
 import HistoryModal from './components/HistoryModal'
 import IdePane from './components/IdePane'
+import PreviewPane from './components/PreviewPane'
+import LiveCodePane from './components/LiveCodePane'
 import BootSplash from './components/BootSplash'
 import SingularityBg from './components/SingularityBg'
 
@@ -21,6 +24,8 @@ export default function App() {
   const settings = useApp((s) => s.settings)
   const sidebarOpen = useApp((s) => s.sidebarOpen)
   const ideOpen = useApp((s) => s.ideOpen)
+  const previewOpen = useApp((s) => s.previewOpen)
+  const liveOpen = useApp((s) => s.liveOpen)
   const session = useApp((s) => s.sessions.find((x) => x.id === s.activeId))
   // first-run setup: shows until the user finishes (or skips) it once
   const setupOpen = !!ready && !!settings && settings.setupDone !== true
@@ -49,7 +54,11 @@ export default function App() {
       }
       if (e.ctrlKey && e.key === 'u') {
         e.preventDefault()
-        useApp.getState().setUsageOpen(true)
+        if (useApp.getState().settings?.showAdvanced === true) useApp.getState().setUsageOpen(true)
+      }
+      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'g') {
+        e.preventDefault() // find in files (v3.1) — project-wide content search
+        useApp.getState().setFindFilesOpen(!useApp.getState().findFilesOpen)
       }
       if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'f') {
         e.preventDefault() // cross-chat search (v3.1) — the find bar checks !shiftKey
@@ -69,7 +78,7 @@ export default function App() {
       }
       if (e.ctrlKey && e.key.toLowerCase() === 'e') {
         e.preventDefault()
-        useApp.getState().toggleIde()
+        if (useApp.getState().settings?.showAdvanced === true) useApp.getState().toggleIde()
       }
     }
     window.addEventListener('keydown', onKey)
@@ -81,22 +90,30 @@ export default function App() {
   return (
     <>
       <BootSplash ready />
+      {/* singularity — the animated black-hole surface, still selectable */}
       {settings?.theme === 'singularity' && <SingularityBg />}
       <div className={`app${setupOpen ? ' setup' : ''}`}>
         <TitleBar title={session?.title} />
-        <div className={`app-body${sidebarOpen ? '' : ' focus'}${ideOpen ? ' code' : ''}`}>
+        <div
+          className={`app-body${sidebarOpen ? '' : ' focus'}${ideOpen ? ' code' : ''}${previewOpen ? ' preview' : ''}${
+            liveOpen ? ' live' : ''
+          }`}
+        >
           <Sidebar />
           <main className="main-pane">
             <ChatView />
             <Composer />
           </main>
           <IdePane />
+          <PreviewPane />
+          <LiveCodePane />
         </div>
         <SettingsModal />
         {setupOpen && <SetupScreen />}
         <ApproveModal />
         <Palette />
         <SearchOverlay />
+        <FindInFiles />
         <Shortcuts />
         <HistoryModal />
         <ToastStack />

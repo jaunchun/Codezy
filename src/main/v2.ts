@@ -2,7 +2,7 @@
 // v2.ts — the Electron shell around the shared agent harness.
 //
 // ONE core, two shells: every line of loop / tools / safety / approval-gate
-// logic lives in cli/lib/harness.mjs (shared with `node cli/codezy-v2.mjs`).
+// logic lives in codezy-cli/lib/harness.mjs (shared with `node codezy-v2.mjs`).
 // This file only injects the desktop-specific pieces:
 //   - emit  → chat:event streams (v2tool activity lines, done/aborted/error)
 //   - ask   → the renderer's confirm dialog (approve returns a promise the
@@ -12,8 +12,8 @@
 import { spawnSync } from 'node:child_process'
 import type { ChatMessage, Session, Settings } from '../shared/types'
 import type { TaskInfo } from '../shared/api'
-import { runAgent, makeRegistry, loadHooks, ollamaCall, openaiCall, TOOLS, MUTATING_TOOLS } from '../../cli/lib/harness.mjs'
-import type { V2Message } from '../../cli/lib/harness.mjs'
+import { runAgent, makeRegistry, loadHooks, ollamaCall, openaiCall, TOOLS, MUTATING_TOOLS } from '../../../codezy-cli/lib/harness.mjs'
+import type { V2Message } from '../../../codezy-cli/lib/harness.mjs'
 import { mcpRegistryTools, type McpSchema } from './mcp'
 
 /** Effort presets, same temperatures the v1 engine uses. */
@@ -179,7 +179,10 @@ export async function runV2(opts: {
     } catch { /* MCP is optional — never block a chat on it */ }
   }
 
-  const effort = session.effort ?? settings.effort
+  // thinking mode (long mode): the Thinking button's persisted field — the
+  // deep effort profile (careful sampling + the big step budget below)
+  // regardless of the session's effort chip.
+  const effort = settings.thinkingMode ? 'deep' : (session.effort ?? settings.effort)
   const temperature = TEMPERATURES[effort] ?? 0.6
   // v3: longer chains for deeper thinking — the cap is a real budget now
   // (5–40), and plan mode needs fewer steps because nothing gets executed.
@@ -238,13 +241,26 @@ export async function runV2(opts: {
       return ask(name, args)
     },
     onEvent: (ev) => {
+      // v3.5 "what is it doing right now": the two START events stream as
+      // `v2step` (live activity line only — no trace row until the step
+      // finishes), the completed one stays `v2tool` (trace + activity).
+      if (ev.type === 'model' || ev.type === 'tool_start') {
+        emit({
+          type: 'v2step',
+          iteration: Number(ev.iteration ?? 0),
+          phase: ev.type === 'model' ? 'thinking' : 'running',
+          name: ev.type === 'model' ? 'thinking' : String(ev.name ?? '?'),
+          ...(ev.type === 'tool_start' && ev.args ? { args: ev.args as Record<string, unknown> } : {})
+        })
+        return
+      }
       if (ev.type === 'tool') {
         emit({
           type: 'v2tool',
-          iteration: ev.iteration ?? 0,
-          name: ev.name ?? '?',
-          args: ev.args ?? {},
-          outcome: ev.outcome ?? 'ok',
+          iteration: Number(ev.iteration ?? 0),
+          name: String(ev.name ?? '?'),
+          args: (ev.args as Record<string, unknown>) ?? {},
+          outcome: String(ev.outcome ?? 'ok'),
           // v3.1 visibility: how long the step took + how big the result was
           ...(typeof ev.ms === 'number' ? { ms: ev.ms } : {}),
           ...(typeof ev.result === 'string' && ev.result ? { size: ev.result.length } : {})

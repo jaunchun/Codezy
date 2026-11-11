@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://codezy.kajtgorski.workers.dev/sitemap.xml

@@ -16,6 +16,10 @@ Be direct and practical. Prefer small, correct code over long explanations.
 
 How to answer:
 - Lead with the answer or the change itself; keep prose short and skimmable.
+- When the user asks you to change or improve code that is already in front of
+  you (in this prompt, attached, or read with a tool), MAKE the change — output
+  the edit block(s). Do not answer with a list of suggestions unless they asked
+  for advice only.
 - Put code in fenced blocks that carry the language tag.
 - Never invent file contents, APIs, flags or line numbers you have not been
   shown here — if you need to see a file first, say exactly that.
@@ -112,6 +116,94 @@ export function fileTree(dir: string, maxEntries = 120): string {
   return out.join('\n')
 }
 
+/** Files a model WITHOUT tools should be able to see, because the entire
+ *  point of linking a folder is that the model can work on it. */
+const CONTENT_EXT = new Set([
+  '.html', '.htm', '.css', '.scss', '.sass', '.less',
+  '.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx', '.vue', '.svelte', '.astro',
+  '.json', '.jsonc', '.md', '.mdx', '.txt', '.yml', '.yaml', '.toml', '.ini', '.cfg',
+  '.py', '.rb', '.go', '.rs', '.java', '.kt', '.cs', '.php', '.swift',
+  '.c', '.h', '.cpp', '.hpp', '.sh', '.bash', '.zsh', '.bat', '.cmd', '.ps1',
+  '.sql', '.svg', '.xml', '.env.example'
+])
+
+/** Never put credentials in front of the model, even from a linked folder. */
+const SECRET_FILE = /^(\.env(\..+)?|\.npmrc|\.netrc|\.git-credentials|id_(rsa|dsa|ecdsa|ed25519)(\..*)?|.*\.(pem|key|p12|pfx|keystore))$/i
+
+/** Cap so one huge file (or a whole node_modules tree) can never crowd out
+ *  the conversation. The model is told when a file was cut. */
+const FOLDER_CONTENT_BUDGET = 14000
+const MAX_CONTENT_FILE_BYTES = 64 * 1024
+
+/** The text files inside `folder`, root level first, hidden/junk/secret files
+ *  skipped. Ordering is deterministic: files before directories, then name. */
+function collectContentFiles(
+  dir: string,
+  rel: string,
+  depth: number,
+  out: { rel: string; abs: string; size: number }[],
+  limit = 60
+): void {
+  if (depth > 3 || out.length >= limit) return
+  let entries: fs.Dirent[]
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return
+  }
+  entries.sort((a, b) => Number(a.isDirectory()) - Number(b.isDirectory()) || a.name.localeCompare(b.name))
+  for (const entry of entries) {
+    if (out.length >= limit) return
+    const name = entry.name
+    if (name.startsWith('.')) continue
+    const abs = path.join(dir, name)
+    const nextRel = `${rel}${name}`
+    if (entry.isDirectory()) {
+      if (SKIP_DIRS.has(name)) continue
+      collectContentFiles(abs, `${nextRel}/`, depth + 1, out, limit)
+      continue
+    }
+    if (!entry.isFile() || SECRET_FILE.test(name)) continue
+    if (!CONTENT_EXT.has(path.extname(name).toLowerCase())) continue
+    try {
+      const st = fs.statSync(abs)
+      if (st.size > MAX_CONTENT_FILE_BYTES) continue
+      out.push({ rel: nextRel, abs, size: st.size })
+    } catch {
+      /* unreadable — skip */
+    }
+  }
+}
+
+/** The REAL file contents of a linked folder, for the classic (no-tools)
+ *  flow. Without this the model only has a file tree and its own rule says
+ *  "never invent file contents" — so it refuses to edit and suggests instead. */
+export function readFolderContents(folder: string, maxChars = FOLDER_CONTENT_BUDGET): string {
+  const files: { rel: string; abs: string; size: number }[] = []
+  collectContentFiles(folder, '', 1, files)
+  const parts: string[] = []
+  let used = 0
+  for (const f of files) {
+    let text: string
+    try {
+      text = fs.readFileSync(f.abs, 'utf8')
+    } catch {
+      continue
+    }
+    if (text.includes('\u0000')) continue // binary that slipped past the ext check
+    const block = `--- ${f.rel} ---\n${text.trimEnd()}\n`
+    if (used + block.length > maxChars) {
+      const room = maxChars - used
+      if (room > 500) parts.push(`${block.slice(0, room)}\n…[truncated — ask the user to paste the rest if you need it]`)
+      else parts.push('…[more files omitted to fit the context window]')
+      break
+    }
+    parts.push(block)
+    used += block.length
+  }
+  return parts.join('\n')
+}
+
 /** Attachment content is hidden in the UI chip — expanded only for the model.
  *  Images become real vision input (data URLs on `.images`); text files keep
  *  the inline-block expansion. */
@@ -190,8 +282,121 @@ export function readProjectInstructions(folder: string, max = 4000): string {
  * Builds the final message array. Called by the main process right before
  * streaming, so the renderer never needs to know about memory/context files.
  */
-export function buildMessages(session: Session, project: Project | null, settings: Settings): ChatMessage[] {
-  const sections: string[] = [BASE_INSTRUCTIONS]
+export interface BuildOptions {
+  /** Resolved by the caller: agent mode really runs this turn (the model can
+   *  call tools). Defaults to v2Active(session, settings). */
+  agent?: boolean
+  /** Why agent mode could not run (e.g. the model has no tool support) —
+   *  stated in the setup card so the model does not promise tools it lacks. */
+  modelNote?: string
+}
+
+/** The facts a small model must never lose: what is linked, what it can
+ *  change, and whether the web is really available this turn. Used in the
+ *  system prompt AND repeated in the turn pin right before the question. */
+function setupFacts(
+  session: Session,
+  settings: Settings,
+  agent: boolean,
+  modelNote: string | undefined,
+  hasWeb: boolean
+): string[] {
+  const folders = session.linkedFolders ?? []
+  const facts: string[] = []
+  if (folders.length) {
+    facts.push(`FOLDER LINKED: ${folders.join(' | ')} — this chat can READ and CHANGE files there.`)
+  } else {
+    facts.push(
+      'FOLDER: none linked yet. You can still create a file with a ===FILE block and a plain filename — the app asks where to save it.'
+    )
+  }
+  if (agent) {
+    facts.push(
+      'FILES: real tools — list_dir, read_file, write_file, edit_file, glob, grep_search, run_command. Use them; do NOT output ===FILE blocks in this mode.'
+    )
+    facts.push(
+      'WEB: real tools — web_search and web_fetch. Search for anything current or web-related; never reply that you cannot browse the web.'
+    )
+  } else {
+    facts.push(
+      'FILES: edit-block mode is ON. Output ===FILE blocks (format above); the app shows an accept card and writes the file. Never reply that you cannot write or change files.'
+    )
+    const webMode = settings.webSearch ?? 'auto'
+    if (webMode === 'off') {
+      facts.push(
+        'WEB: turned OFF by the user right now. Do not claim you can search this turn; if the answer needs current facts, say the web chip is off and they can set it to auto.'
+      )
+    } else if (hasWeb) {
+      facts.push(
+        'WEB: ON — the live results are attached directly below the question. Answer from them and cite the URLs; never say you cannot search the web.'
+      )
+    } else {
+      facts.push(
+        'WEB: ON (auto) — the app searches the internet when a question needs current facts and attaches the results below the question. If you need a search and none is attached, say "search the web for …" so the app runs one. Never claim you have no web access.'
+      )
+    }
+  }
+  if (modelNote) facts.push(`MODEL: ${modelNote}`)
+  facts.push(
+    'These are REAL capabilities, not hypothetical: do not tell the user you lack access to their files, folders, or the internet.'
+  )
+  return facts
+}
+
+function setupSection(facts: string[]): string {
+  return (
+    '## Your actual setup — REAL, right now\n' +
+    facts.map((f) => `- ${f}`).join('\n') +
+    '\nAnswer as the agent described here; never contradict this card.'
+  )
+}
+
+/** The linked folder(s): a tree always, plus the REAL file contents in the
+ *  classic flow — a model that cannot read files but is told not to invent
+ *  their contents will otherwise refuse to edit and suggest instead. */
+function folderSection(session: Session, agent: boolean): string | null {
+  const folders = session.linkedFolders ?? []
+  if (!folders.length) return null
+  const blocks = folders.map((folder) => {
+    const tree = fileTree(folder)
+    const ctx = safeRead(path.join(folder, 'CODEZY.md')).trim()
+    const proj = readProjectInstructions(folder)
+    const head =
+      `Folder: ${folder}\n` +
+      (agent
+        ? 'This folder is LINKED. Use read_file to open any file below.'
+        : 'This folder is LINKED and you can change it. Its REAL file contents follow the tree.') +
+      `\n\nTree:\n${tree || '(empty or unreadable)'}`
+    let block = ctx ? `${head}\n\nCODEZY.md (project context):\n${ctx}` : head
+    if (!agent) {
+      const body = readFolderContents(folder)
+      if (body) block += `\n\nFile contents (the real files — edit these directly):\n\n${body}`
+    }
+    if (proj) {
+      block += `\n\n.codezy/instructions.md (project instructions — standing rules for THIS project, follow them):\n${proj}`
+    }
+    return block
+  })
+  return `## Linked folders — LINKED, real files\n${blocks.join('\n\n')}`.slice(0, 24000)
+}
+
+export function buildMessages(
+  session: Session,
+  project: Project | null,
+  settings: Settings,
+  /** Live web results for this turn (the normal chat has no tools, so the
+   *  main process searched and read the pages for the model). */
+  web?: string,
+  opts: BuildOptions = {}
+): ChatMessage[] {
+  const agent = opts.agent ?? v2Active(session, settings)
+  const hasWeb = !!web?.trim()
+  const facts = setupFacts(session, settings, agent, opts.modelNote, hasWeb)
+  const sections: string[] = [BASE_INSTRUCTIONS, setupSection(facts)]
+  // The folder is the workspace — put it BEFORE the generic guidance, with
+  // its real files in the no-tools flow.
+  const folders = folderSection(session, agent)
+  if (folders) sections.push(folders)
 
   // 0. mode — plan mode forbids edit blocks entirely
   if ((settings.mode ?? 'build') === 'plan') {
@@ -200,9 +405,23 @@ export function buildMessages(session: Session, project: Project | null, setting
     )
   }
 
+  // 0a. thinking mode (long mode) — the app's Thinking button: a hard problem
+  // deserves care, not speed. This is the prompting half; the sampling half
+  // shifts the target to the careful end in chat:send.
+  if (settings.thinkingMode) {
+    sections.push(
+      '## Thinking mode\n' +
+        'The user turned on THINKING (long mode) — this deserves care, not speed. Before answering: ' +
+        'restate the problem to yourself in one line, sketch a short plan, and when more than one ' +
+        'reasonable approach exists, name the alternative you rejected and why. Work through it step ' +
+        'by step, verify your reasoning before presenting it, check edge cases, and state your ' +
+        'assumptions. Slower and thorough beats fast and wrong.'
+    )
+  }
+
   // 0b. agent mode (v2) — name the tools so the model never claims it has none
   // (same check as the router: no linked folder = plain chat, no tools)
-  if (v2Active(session, settings)) {
+  if (agent) {
     sections.push(
       '## Tools\n' +
         'You run with tools: list_dir, read_file, write_file, edit_file, glob, grep_search, run_command, web_search, web_fetch, todo_write.\n' +
@@ -227,7 +446,21 @@ export function buildMessages(session: Session, project: Project | null, setting
     )
   }
 
-  // 0c. standing instructions from the user — always close to the top, so a
+  // 0c. the web — the RESULTS ride with the question (see the end of this
+  // function), but the model must be told it HAS the web, or it falls back
+  // on "I cannot browse the internet" while the results sit right there
+  if (web?.trim()) {
+    sections.push(
+      '## Web access\n' +
+        'The turn below the user\'s question carries LIVE web results — titles, URLs, ' +
+        'snippets and page text fetched from the internet a moment ago. Answer the ' +
+        'question FROM them and cite the URLs you used. Never reply that you cannot ' +
+        'browse the web, that you have no internet access, or that your information ' +
+        'is out of date: the results are right there.'
+    )
+  }
+
+  // 0d. standing instructions from the user — always close to the top, so a
   // small model cannot lose them under a long transcript
   if (settings.instructions?.trim()) {
     sections.push(`## Instructions from you\n${settings.instructions.trim()}`)
@@ -257,32 +490,12 @@ export function buildMessages(session: Session, project: Project | null, setting
   // 5. /btw background notes
   if (session.notes?.length) sections.push(`## Background notes\n${session.notes.map((n) => `- ${n}`).join('\n')}`)
 
-  // 6. linked folders — a shallow file tree so the model knows what exists,
-  //    plus the CODEZY.md context file that /init generates for the project
-  //    and .codezy/instructions.md — standing orders the project owner keeps
-  //    in the repo (v3.1; capped so a huge file can never drown the tree)
-  if (session.linkedFolders?.length) {
-    const blocks = session.linkedFolders.map((folder) => {
-      const tree = fileTree(folder)
-      const ctx = safeRead(path.join(folder, 'CODEZY.md')).trim()
-      const proj = readProjectInstructions(folder)
-      const head = `Folder: ${folder}\n${tree || '(empty or unreadable)'}`
-      let block = ctx ? `${head}\n\nCODEZY.md (project context):\n${ctx}` : head
-      if (proj) {
-        block += `\n\n.codezy/instructions.md (project instructions — standing rules for THIS project, follow them):\n${proj}`
-      }
-      return block
-    })
-    sections.push(`## Linked folders\n${blocks.join('\n\n')}`.slice(0, 16000))
-  }
-
   const system: ChatMessage = {
     id: 'system',
     role: 'system',
     content: sections.join('\n\n'),
     ts: Date.now()
   }
-
   // 6. history, trimmed from the oldest end until it fits the budget.
   //    Oversized messages are SHRUNK (head + tail kept) rather than dropped,
   //    otherwise the oldest message — usually the attached code — vanishes
@@ -312,5 +525,33 @@ export function buildMessages(session: Session, project: Project | null, setting
   }
   kept.reverse() // restore chronological order
 
-  return [system, ...kept]
+  const msgs: ChatMessage[] = [system, ...kept]
+
+  // The setup + web ride RIGHT BEFORE the question, not only inside the
+  // system prompt: a 7B weighs the newest turn far more than the oldest, and
+  // "I cannot access your files / browse the web" is a very strong prior.
+  const pinParts = [
+    '## Session state — LIVE, read this before answering',
+    facts.map((f) => `- ${f}`).join('\n')
+  ]
+  if (hasWeb) {
+    pinParts.push('## Web results — LIVE, fetched from the internet just now', String(web).trim())
+  }
+  const pin: ChatMessage = {
+    id: 'session-state',
+    role: 'user',
+    content: pinParts.join('\n\n'),
+    ts: Date.now()
+  }
+  let lastUser = -1
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === 'user') {
+      lastUser = i
+      break
+    }
+  }
+  if (lastUser > 0) msgs.splice(lastUser, 0, pin)
+  else msgs.push(pin)
+
+  return msgs
 }

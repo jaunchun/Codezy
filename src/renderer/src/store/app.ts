@@ -7,10 +7,11 @@
 
 import { create } from 'zustand'
 import type { ChatMessage, Project, Settings, Session, ConnectionStatus, V2Outcome, EffortLevel, ProviderConfig } from '../../../shared/types'
-import type { ChatSearchHit, ModelEntry, UpdateCheck } from '../../../shared/api'
+import type { ChatSearchHit, FileSearchHit, ModelEntry, UpdateCheck } from '../../../shared/api'
 import { COMMANDS, helpText, isEffort, isTheme, parseInput, themeBase, themePalette } from '../../../shared/commands'
 import { PROVIDER_PRESETS } from '../../../shared/providers'
 import { parseEdits, stripEditBlocks, changeCounts } from '../../../shared/edits'
+import { humanizeError } from '../lib/errors'
 
 const api = () => window.codezy
 
@@ -78,6 +79,8 @@ export interface Notice {
   id: string
   text: string
   kind?: 'info' | 'error'
+  /** Raw engine text behind a "Technical details" disclosure (errors). */
+  detail?: string
   /** persistent action button — stays until clicked (e.g. ↩ Undo after an accept) */
   action?: { label: string; run: () => void | Promise<void> }
 }
@@ -88,6 +91,8 @@ export interface V2Activity {
   name: string
   args: Record<string, unknown>
   outcome: V2Outcome
+  /** v3.5 — what the model is doing RIGHT NOW: thinking | running | done. */
+  phase?: 'thinking' | 'running' | 'done'
 }
 
 /** A pending v2 approval dialog (main is blocked until the user answers). */
@@ -121,6 +126,9 @@ export interface AppState {
   /** unsent composer text per chat — switching chats never loses typing */
   chatDrafts: Record<string, string>
   v2Activity: V2Activity | null
+  /** The last live web search (the normal chat has no tools, so the app
+   *  searches for the model) — shown in the chat as a quiet line. */
+  webNote: { text: string; query: string } | null
   v2Ask: V2Ask | null
   settingsOpen: boolean
   createProjectOpen: boolean
@@ -128,6 +136,8 @@ export interface AppState {
   /** v3.1 batch30 — the background tasks panel + the composer's live count. */
   tasksOpen: boolean
   taskCount: number
+  /** thinking mode (long mode) — the Thinking button; mirrors settings.thinkingMode */
+  thinking: boolean
   /** /history — the timeline of edit backups (restore any one of them). */
   historyOpen: boolean
   /** agent write for the cowork editor — drops a cursor where the model works */
@@ -143,6 +153,8 @@ export interface AppState {
   updateDismissed: string | null
 
   init(): Promise<void>
+  /** offline sidebar dot → boot the engine right here (closure fn, top of store) */
+  bootOllama(): Promise<void>
   setActive(id: string | null): void
   setFilter(projectId: string | null): void
   newChat(projectId?: string | null): Promise<void>
@@ -178,7 +190,7 @@ export interface AppState {
   updateSettings(patch: Partial<Settings>): Promise<void>
   /** Re-read settings + models written by another holder (the TUI, …). */
   resync(): Promise<void>
-  addNotice(text: string, kind?: Notice['kind'], action?: Notice['action']): void
+  addNotice(text: string, kind?: Notice['kind'], action?: Notice['action'], detail?: string): void
   dismissNotice(id: string): void
   /** Reverts the last accepted edit batch (the backup written on apply). */
   undoLast(): Promise<void>
@@ -191,6 +203,8 @@ export interface AppState {
   setHistoryOpen(v: boolean): void
   /** batch30 — the panel + the count refresh behind the composer chip. */
   setTasksOpen(v: boolean): void
+  /** thinking mode (long mode) — persists through settings.thinkingMode */
+  setThinking(v: boolean): void
   refreshTasks(): Promise<void>
   /** Ctrl+K command palette. */
   paletteOpen: boolean
@@ -198,6 +212,12 @@ export interface AppState {
   /** Ctrl+Shift+F — search every chat's messages (v3.1). */
   searchOpen: boolean
   setSearchOpen(v: boolean): void
+  /** Ctrl+Shift+G — Find in files across the linked folders (v3.1). */
+  findFilesOpen: boolean
+  setFindFilesOpen(v: boolean): void
+  /** A find hit asked the cowork editor to open a file at a line. */
+  ideReveal: { path: string; line: number; column: number; length: number; nonce: number } | null
+  revealInIde(hit: FileSearchHit): void
   /** Debounced query + the hits currently listed in the overlay. */
   searchQuery: string
   searchHits: ChatSearchHit[]
@@ -212,6 +232,17 @@ export interface AppState {
   /** v1.5 — cowork editor pane (file tree + editor next to the chat). */
   ideOpen: boolean
   toggleIde(): void
+  /** The live site preview pane. */
+  previewOpen: boolean
+  setPreviewOpen(v: boolean): void
+  /** v3.1.7 — the live edit panel: the agent's proposed edits streaming in
+   *  real time (shared slot with the preview/cowork panes).
+   *  `liveAuto` re-arms on every manual open so the next proposal pops the
+   *  panel open again; a manual close disarms it until the user reopens. */
+  liveOpen: boolean
+  liveAuto: boolean
+  setLiveOpen(v: boolean): void
+  toggleLive(): void
   /** v2.3 — the file open in cowork, mirrored live (unsaved edits included):
    *  the composer attaches it so the model sees what you're looking at. */
   ideFile: { path: string; content: string } | null
@@ -248,27 +279,21 @@ export interface AppState {
   dismissUpdate(): void
 }
 
-const PALETTE_THEMES = new Set<string>(['midnight', 'ember', 'mint', 'slate'])
-
 export function applyTheme(theme: Settings['theme'], accent: string): void {
-  // shared config: the terminal palettes (midnight/ember/mint/slate) ride on
-  // the dark surfaces; dark/light/acrylic/singularity pick the base mode
+  // 3.2.0: graphite/paper/contrast pick the surface. Every accent is an
+  // independent choice now — the legacy palette ids are only surface aliases,
+  // never accent owners, so an old saved theme cannot drop the signal colour.
   document.documentElement.dataset.theme = themeBase(theme)
   document.documentElement.dataset.palette = themePalette(theme)
   applyAccent(theme, accent)
 }
 
-/** Surface themes (dark/light/acrylic) follow the custom accent — the inline
- *  value outranks the stylesheet's data-palette rule. The palette THEMES own
- *  theirs so the desktop keeps mirroring the terminal's /theme, and singularity
- *  forces white so the whole surface stays monochrome. accent-2 is derived so
- *  focus rings and gradients track whatever the user picked. */
+/** Themes follow the custom accent — the inline value outranks the stylesheet.
+ *  Singularity is the one exception: it forces white so the whole surface stays
+ *  monochrome. accent-2 is derived so focus rings and gradients track the pick. */
 function applyAccent(theme: Settings['theme'], accent: string): void {
   const root = document.documentElement
-  // singularity is deliberately colourless — the stylesheet forces --accent to
-  // white (a two-attribute rule that outranks the data-palette block), so the
-  // picked accent is dropped rather than painted over it.
-  if (PALETTE_THEMES.has(theme) || theme === 'singularity') {
+  if (theme === 'singularity') {
     root.style.removeProperty('--accent')
     root.style.removeProperty('--accent-2')
     return
@@ -301,6 +326,8 @@ function unclosedFence(text: string): boolean {
 
 /** Monotonic token for runSearch — a stale response lands in the void. */
 let searchSeq = 0
+/** Monotonic token for cowork reveals — the same hit twice still re-opens. */
+let revealSeq = 0
 
 export const useApp = create<AppState>((set, get) => {
   // Per-SESSION bookkeeping (keyed by sessionId): two chats can generate at
@@ -316,6 +343,27 @@ export const useApp = create<AppState>((set, get) => {
   // keep asking until it answers. Re-armed whenever a run errors out, which
   // is usually the engine dying mid-stream.
   let ollamaWatch: number | null = null
+
+  /**
+   * Offline dot → click → boot the engine here. Sets the dot to "checking"
+   * immediately and lets the existing watch confirm it, so the UI never has
+   * to wait on a spawn. Exposed on the store as `bootOllama()` (bottom).
+   */
+  async function bootOllama(): Promise<void> {
+    if (get().ollama === 'online') return
+    set({ ollama: 'checking' })
+    armOllamaWatch()
+    try {
+      const r = await api().app.startOllama()
+      if (!r.ok) {
+        set({ ollama: 'offline' })
+        get().addNotice('Could not start Ollama — is it installed? (ollama serve)', 'error')
+      }
+    } catch {
+      set({ ollama: 'offline' })
+    }
+  }
+
   function armOllamaWatch(): void {
     if (ollamaWatch != null) return
     ollamaWatch = window.setInterval(() => {
@@ -360,14 +408,46 @@ export const useApp = create<AppState>((set, get) => {
       set(patch)
     }
 
+    if (payload.type === 'websearch') {
+      // the app searched for the model (the normal chat has no tools) — say
+      // so, in the chat, so a fresh answer is never a mystery
+      const note = `searched the web · ${payload.results ?? 0} result${
+        Number(payload.results) === 1 ? '' : 's'
+      }${Number(payload.pages) > 0 ? ` · ${payload.pages} page${Number(payload.pages) === 1 ? '' : 's'} read` : ''}`
+      if (!mine) return
+      set({ webNote: { text: note, query: String(payload.query ?? '') } })
+      return
+    }
+
     if (payload.type === 'delta') {
       // buffer per session: a background chat's stream accumulates in its own
       // slot, so switching back shows the text received so far instead of an
       // empty bubble that restarts from the next delta
       const next = (get().streamTexts[sid] ?? '') + (payload.text as string)
       const texts = { ...get().streamTexts, [sid]: next }
-      if (mine) set({ streamText: next, streamTexts: texts })
-      else set({ streamTexts: texts })
+      if (mine) {
+        set({ streamText: next, streamTexts: texts })
+        // the live edit panel opens itself the moment the first ===FILE lands
+        // (auto-armed again every time the user opens it; a manual close
+        // disarms it so the panel never fights the user)
+        if (get().liveAuto && !get().liveOpen && next.includes('===FILE')) set({ liveOpen: true })
+      } else set({ streamTexts: texts })
+      return
+    }
+
+    if (payload.type === 'v2step') {
+      // v3.5 — live activity only ("thinking…" / "running grep…"): it must
+      // not add a trace row, the matching v2tool lands that when it finishes
+      if (!mine) return
+      set({
+        v2Activity: {
+          iteration: Number(payload.iteration) || 0,
+          name: payload.phase === 'thinking' ? 'thinking' : String(payload.name),
+          args: (payload.args as Record<string, unknown>) ?? {},
+          outcome: 'ok' as V2Outcome,
+          phase: payload.phase as 'thinking' | 'running' | 'done'
+        }
+      })
       return
     }
 
@@ -394,7 +474,8 @@ export const useApp = create<AppState>((set, get) => {
           iteration: Number(payload.iteration) || 0,
           name: String(payload.name),
           args: (payload.args as Record<string, unknown>) ?? {},
-          outcome
+          outcome,
+          phase: 'done' as const
         }
       })
       // a file write → the cowork editor drops its "AI writing here" cursor
@@ -436,9 +517,13 @@ export const useApp = create<AppState>((set, get) => {
       // OS notification — only when you're off doing something else
       try {
         if (get().settings?.notifyDone && !document.hasFocus() && typeof Notification !== 'undefined') {
-          new Notification('CODEZY', {
+          const n = new Notification('CODEZY', {
             body: `${session?.title ?? 'Reply'}\n${message.content.slice(0, 140)}`
           })
+          n.onclick = () => {
+            // one click should get you to the reply — no alt-tab hunting
+            window.focus()
+          }
         }
       } catch {
         /* notifications unavailable — never break the reply for this */
@@ -508,6 +593,11 @@ export const useApp = create<AppState>((set, get) => {
       return
     }
 
+    if (payload.type === 'notice') {
+      get().addNotice(String(payload.text), payload.kind === 'error' ? 'error' : undefined)
+      return
+    }
+
     if (payload.type === 'error') {
       pendingInit.delete(sid)
       pendingTrace.delete(sid)
@@ -540,9 +630,17 @@ export const useApp = create<AppState>((set, get) => {
     }
 
     switch (name) {
-      case '/help':
-        s.addNotice(helpText())
+      case '/help': {
+        const all = args.trim().toLowerCase() === 'all'
+        const advanced = all || settings.showAdvanced === true
+        const body = helpText(advanced ? 'all' : 'simple')
+        s.addNotice(
+          advanced
+            ? body
+            : `${body}\n\nAdvanced commands are hidden. /help all lists them, or turn on Advanced features in Settings.`
+        )
         break
+      }
 
       case '/clear':
         if (session) await saveSession({ ...session, messages: [] })
@@ -1134,6 +1232,7 @@ export const useApp = create<AppState>((set, get) => {
     composerDraft: null,
     chatDrafts: loadDrafts(),
     v2Activity: null,
+    webNote: null,
     v2Ask: null,
     aiWrite: null,
     autoContinuations: 0,
@@ -1141,23 +1240,32 @@ export const useApp = create<AppState>((set, get) => {
     settingsSection: null,
     paletteOpen: false,
     searchOpen: false,
+    findFilesOpen: false,
+    ideReveal: null,
     searchQuery: '',
     searchHits: [],
     scrollTarget: null,
     shortcutsOpen: false,
     ideOpen: false,
+    previewOpen: false,
+    liveOpen: false,
+    liveAuto: true,
     ideFile: null,
     ideTick: 0,
     sidebarOpen: SIDEBAR_OPEN,
     createProjectOpen: false,
     usageOpen: false,
     tasksOpen: false,
+    thinking: false,
     taskCount: 0,
     historyOpen: false,
     updateInfo: null,
     updatePhase: 'idle',
     updatePercent: 0,
     updateDismissed: loadUpdateDismissed(),
+
+    // the offline dot's click handler — a plain closure fn re-exported here
+    bootOllama,
 
     async init() {
       if (initialized) return // StrictMode double-mount guard
@@ -1177,7 +1285,17 @@ export const useApp = create<AppState>((set, get) => {
         api().chat.onEvent(handleEvent)
         subscribed = true
       }
-      set({ settings, projects, sessions, models, ollama, drive, ready: true, activeId: sessions[0]?.id ?? null })
+      set({
+        settings,
+        projects,
+        sessions,
+        models,
+        ollama,
+        drive,
+        ready: true,
+        activeId: sessions[0]?.id ?? null,
+        thinking: settings.thinkingMode === true
+      })
       if (ollama !== 'online') armOllamaWatch() // autostarted or first-chat-started — poll until it's up
 
       // v2.6 — quiet GitHub check, once per launch, a few seconds in so it
@@ -1303,6 +1421,7 @@ export const useApp = create<AppState>((set, get) => {
         streamingIds: [...new Set([...get().streamingIds, saved.id])],
         streamText: '',
         streamTexts: texts,
+        webNote: null, // a new turn starts with a clean slate
         notices: [],
         usageOpen: false // sending a message closes the in-chat usage window
       })
@@ -1626,6 +1745,9 @@ export const useApp = create<AppState>((set, get) => {
       // May reject if the acrylic theme swap is rebuilding the window.
       const saved = await api().settings.set(patch).catch(() => next)
       set({ settings: saved })
+      // Simple mode has no Projects section, so a project filter left over from
+      // advanced mode would be impossible to clear from the sidebar.
+      if (patch.showAdvanced === false) set({ filterProjectId: null })
       try {
         // models first — a drive hiccup must never skip the model refresh
         if (patch.ollamaUrl || patch.providers) set({ models: await api().models.list() })
@@ -1654,8 +1776,20 @@ export const useApp = create<AppState>((set, get) => {
       }
     },
 
-    addNotice(text, kind = 'info', action) {
-      const notice: Notice = { id: uid(), text, kind, action }
+    addNotice(text, kind = 'info', action, detail) {
+      // Errors arrive raw from Ollama/providers — turn them into a WHAT + FIX
+      // sentence and keep the original text behind "Technical details".
+      const h = kind === 'error' ? humanizeError(text) : null
+      const notice: Notice = {
+        id: uid(),
+        text: h ? h.text : text,
+        kind,
+        action,
+        detail: detail ?? h?.detail
+      }
+      // Repeated checks (the "check now" button, /update) must not stack the
+      // same toast into a wall — one copy is the whole message.
+      if (get().notices.some((n) => n.text === notice.text && n.kind === notice.kind)) return
       set({ notices: [...get().notices, notice] })
     },
 
@@ -1693,6 +1827,14 @@ export const useApp = create<AppState>((set, get) => {
       set({ tasksOpen: v })
       if (v) void get().refreshTasks() // fresh rows the moment the panel opens
     },
+
+    setThinking(v) {
+      // persists through settings — main reads thinkingMode on every
+      // chat:send (sampling) and in buildMessages (prompting); the CLI's
+      // /thinking reads the same field at boot
+      set({ thinking: v })
+      void get().updateSettings({ thinkingMode: v })
+    },
     async refreshTasks() {
       try {
         const tasks = await api().tasks.list()
@@ -1711,6 +1853,15 @@ export const useApp = create<AppState>((set, get) => {
     },
     setSearchOpen(v) {
       set({ searchOpen: v })
+    },
+    setFindFilesOpen(v) {
+      set({ findFilesOpen: v })
+    },
+    revealInIde(hit) {
+      set({
+        ideOpen: true,
+        ideReveal: { path: hit.path, line: hit.line, column: hit.column, length: hit.length, nonce: ++revealSeq }
+      })
     },
     async runSearch(q) {
       set({ searchQuery: q })
@@ -1744,7 +1895,31 @@ export const useApp = create<AppState>((set, get) => {
       set({ shortcutsOpen: !get().shortcutsOpen })
     },
     toggleIde() {
-      set({ ideOpen: !get().ideOpen })
+      // the cowork editor shares its slot with the preview and live panes
+      set({ ideOpen: !get().ideOpen, liveOpen: false })
+    },
+    setPreviewOpen(v) {
+      // the preview, the cowork editor and the live panel share the same slot
+      set({ previewOpen: v, ideOpen: v ? false : get().ideOpen, liveOpen: v ? false : get().liveOpen })
+    },
+    setLiveOpen(v) {
+      // a manual close disarms auto-open (the panel never fights the user);
+      // a manual open re-arms it for the next proposal
+      set({
+        liveOpen: v,
+        previewOpen: v ? false : get().previewOpen,
+        ideOpen: v ? false : get().ideOpen,
+        liveAuto: v ? true : false
+      })
+    },
+    toggleLive() {
+      const v = !get().liveOpen
+      set({
+        liveOpen: v,
+        previewOpen: v ? false : get().previewOpen,
+        ideOpen: v ? false : get().ideOpen,
+        liveAuto: v
+      })
     },
     setIdeFile(f) {
       // identical content → skip, so stray effects don't re-render the tree

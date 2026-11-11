@@ -1,0 +1,1943 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CODEZY field manual — 3.1.6</title>
+<meta name="description" content="A short CODEZY 3.1.6 manual: install, tool-calling models, agent mode, the CLI, settings, and 37 known errors with fixes." />
+<meta name="color-scheme" content="dark" />
+<style>
+  /* Strict monochrome. Self-contained: no fonts, images, scripts or styles are fetched. */
+  :root {
+    color-scheme: dark;
+    --bg: #0a0a0a;
+    --panel: #111111;
+    --panel-2: #171717;
+    --text: #f2f2f2;
+    --text-2: #b5b5b5;
+    --text-3: #7c7c7c;
+    --line: #262626;
+    --line-2: #3c3c3c;
+    --wash: rgba(255, 255, 255, 0.05);
+    --sans: ui-sans-serif, "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    --max: 1560px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--text); color: var(--bg); }
+  a { color: inherit; text-decoration-color: var(--line-2); text-underline-offset: 3px; }
+  a:hover { text-decoration-color: var(--text); }
+  code, pre, kbd { font-family: var(--mono); }
+  code {
+    font-size: 0.86em;
+    background: var(--wash);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1px 5px;
+    white-space: break-spaces;
+  }
+  pre {
+    margin: 14px 0;
+    padding: 14px 16px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 2px solid var(--line-2);
+    border-radius: 7px;
+    overflow-x: auto;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--text-2);
+    tab-size: 2;
+  }
+  pre code { background: none; border: 0; padding: 0; color: inherit; white-space: pre; }
+  kbd {
+    display: inline-block;
+    border: 1px solid var(--line-2);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    background: var(--panel-2);
+    padding: 1px 5px;
+    font-size: 10.5px;
+    line-height: 1.5;
+    color: var(--text);
+    white-space: nowrap;
+  }
+  img, svg { max-width: 100%; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
+  .skip {
+    position: fixed; top: 8px; left: 8px; z-index: 20;
+    transform: translateY(-150%);
+    background: var(--text); color: var(--bg);
+    padding: 8px 14px; border-radius: 6px; font-weight: 700; text-decoration: none;
+  }
+  .skip:focus { transform: none; }
+  /* -- top bar: brand, one search field, version ----------------------- */
+  .topbar {
+    position: sticky; top: 0; z-index: 30;
+    background: var(--bg);
+    border-bottom: 1px solid var(--line);
+  }
+  .topbar-in {
+    display: flex; align-items: center; gap: 18px;
+    max-width: var(--max); margin: 0 auto;
+    padding: 12px 24px;
+  }
+  .brand {
+    display: inline-flex; align-items: center; gap: 9px;
+    text-decoration: none; font-weight: 800; letter-spacing: 0.12em;
+    font-size: 11.5px; white-space: nowrap; flex: none;
+  }
+  .ring {
+    width: 18px; height: 18px; border-radius: 50%;
+    border: 1.5px solid var(--text); position: relative; flex: none;
+  }
+  .ring::before {
+    content: ""; position: absolute; inset: 3.5px; border-radius: 50%;
+    border: 1px solid var(--text-2);
+  }
+  .brand .doc { color: var(--text-3); font-weight: 500; letter-spacing: 0.14em; }
+  .doc-search {
+    position: relative;
+    display: flex; align-items: center; gap: 8px;
+    flex: 1; max-width: 520px; margin-left: auto;
+    padding: 7px 10px;
+    border: 1px solid var(--line); border-radius: 8px;
+    background: var(--panel); color: var(--text-3);
+  }
+  .doc-search:focus-within { border-color: var(--line-2); background: var(--panel-2); }
+  .doc-search .search-mark {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em;
+    color: var(--text-3); flex: none;
+  }
+  .doc-search input {
+    flex: 1; min-width: 0; border: 0; outline: 0; background: transparent;
+    color: var(--text); font: inherit; font-size: 12.5px;
+  }
+  .doc-search input::placeholder { color: var(--text-3); }
+  .doc-search input::-webkit-search-cancel-button { filter: grayscale(1); }
+  .doc-search kbd {
+    border: 1px solid var(--line); background: var(--bg); padding: 0 4px;
+    font-size: 9px; line-height: 1.5; border-bottom-width: 1px;
+  }
+  .doc-results {
+    position: absolute; top: calc(100% + 7px); left: 0; right: 0; z-index: 40;
+    max-height: min(62vh, 430px); overflow-y: auto;
+    padding: 5px;
+    border: 1px solid var(--line-2); border-radius: 9px;
+    background: var(--panel);
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+  }
+  .doc-results[hidden] { display: none; }
+  .doc-hit {
+    display: grid; grid-template-columns: 52px minmax(0, 1fr);
+    gap: 9px; align-items: start; width: 100%;
+    padding: 7px 8px; border: 0; border-radius: 6px;
+    background: transparent; color: var(--text-2);
+    font: inherit; text-align: left; cursor: pointer;
+  }
+  .doc-hit:hover, .doc-hit:focus-visible, .doc-hit.on {
+    background: var(--wash); color: var(--text); outline: none;
+  }
+  .doc-hit-kind {
+    padding-top: 1px;
+    font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-3);
+  }
+  .doc-hit-label { display: block; font-size: 12px; font-weight: 600; line-height: 1.35; }
+  .doc-hit-sub {
+    display: block; margin-top: 1px;
+    font-size: 10.5px; line-height: 1.45; color: var(--text-3);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .doc-hit-sub b { color: var(--text-2); font-weight: 500; }
+  .doc-empty { margin: 0; padding: 12px 10px; font-size: 11.5px; color: var(--text-3); }
+  .version {
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.1em;
+    color: var(--text-3); white-space: nowrap; flex: none;
+  }
+  /* -- three-column docs shell ----------------------------------------- */
+  .docs-shell {
+    display: grid;
+    grid-template-columns: 230px minmax(0, 1fr) 210px;
+    align-items: start;
+    max-width: var(--max); margin: 0 auto;
+  }
+  .docs-side {
+    position: sticky; top: 57px;
+    height: calc(100vh - 57px);
+    max-height: calc(100vh - 57px);
+    overflow-y: auto;
+    padding: 26px 14px 40px 24px;
+    border-right: 1px solid var(--line);
+    scrollbar-width: thin;
+  }
+  .nav { display: flex; flex-direction: column; gap: 2px; }
+  .nav-label {
+    margin: 16px 0 4px; padding: 0 8px;
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--text-3);
+  }
+  .nav-label:first-child { margin-top: 0; }
+  .nav a {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px;
+    border-left: 2px solid transparent; border-radius: 0 5px 5px 0;
+    color: var(--text-2); text-decoration: none;
+    font-size: 12.5px; line-height: 1.35;
+  }
+  .nav a:hover, .nav a:focus-visible {
+    color: var(--text); background: var(--wash);
+  }
+  .nav a.active {
+    color: var(--text); background: var(--wash);
+    border-left-color: var(--text);
+  }
+  .nav .count {
+    margin-left: auto;
+    font-family: var(--mono); font-size: 9px; color: var(--text-3);
+  }
+  .docs-toc {
+    position: sticky; top: 57px;
+    height: calc(100vh - 57px);
+    max-height: calc(100vh - 57px);
+    overflow-y: auto;
+    padding: 26px 24px 40px 18px;
+    border-left: 1px solid var(--line);
+    scrollbar-width: thin;
+  }
+  .toc-title {
+    margin: 0 0 8px;
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--text-3);
+  }
+  .toc-group { display: none; flex-direction: column; gap: 1px; }
+  .toc-group.active { display: flex; }
+  .toc-group a {
+    padding: 4px 0; color: var(--text-3); text-decoration: none;
+    font-size: 11px; line-height: 1.4;
+  }
+  .toc-group a.toc-top {
+    padding-bottom: 5px; color: var(--text-2);
+    font-size: 11.5px; font-weight: 600;
+  }
+  .toc-group a.sub { padding-left: 9px; border-left: 1px solid var(--line); }
+  .toc-group a:hover, .toc-group a:focus-visible { color: var(--text); }
+  .toc-back {
+    display: inline-block; margin-top: 14px;
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-3); text-decoration: none;
+  }
+  .toc-back:hover { color: var(--text); }
+  .toc-note {
+    margin: 4px 0 0; padding-left: 9px;
+    border-left: 1px solid var(--line);
+    font-size: 10.5px; line-height: 1.5; color: var(--text-3);
+  }
+  h3[id] { scroll-margin-top: 70px; }
+  /* -- layout ----------------------------------------------------------- */
+  .wrap {
+    min-width: 0; width: 100%; max-width: 940px;
+    justify-self: center;
+    padding: 0 40px 100px;
+  }
+  .hero { padding: 58px 0 34px; border-bottom: 1px solid var(--line); }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    margin: 0 0 14px;
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--text-3);
+  }
+  .eyebrow .dot {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--text); flex: none;
+  }
+  h1 {
+    margin: 0 0 16px;
+    font-size: clamp(34px, 5.8vw, 56px);
+    line-height: 1.02;
+    letter-spacing: -0.04em;
+    font-weight: 760;
+  }
+  h1 span { color: var(--text-3); }
+  .lede {
+    max-width: 700px; margin: 0 0 20px;
+    font-size: 16px; line-height: 1.6; color: var(--text-2);
+  }
+  .lede strong { color: var(--text); font-weight: 600; }
+  .hero-meta {
+    display: flex; flex-wrap: wrap; gap: 8px 18px;
+    margin: 0 0 22px;
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-3);
+  }
+  .hero-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 7px;
+    min-height: 36px; padding: 0 14px;
+    border: 1px solid var(--line-2); border-radius: 6px;
+    background: transparent; color: var(--text); text-decoration: none;
+    font-size: 12.5px; font-weight: 600;
+  }
+  .btn:hover { background: var(--wash); border-color: var(--text-3); }
+  .btn.primary { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .btn.primary:hover { background: var(--text-2); border-color: var(--text-2); }
+  /* -- sections --------------------------------------------------------- */
+  .doc-section { padding-top: 52px; scroll-margin-top: 74px; }
+  .section-head {
+    display: grid; grid-template-columns: 38px minmax(0, 1fr);
+    gap: 0 12px; align-items: start;
+    padding-top: 16px; margin-bottom: 20px;
+    border-top: 1px solid var(--line);
+  }
+  .section-num {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em;
+    color: var(--text-3); padding-top: 6px;
+  }
+  .section-head h2 {
+    margin: 0;
+    font-size: clamp(23px, 3vw, 30px);
+    line-height: 1.15;
+    letter-spacing: -0.03em;
+    font-weight: 720;
+  }
+  .section-head .sub {
+    margin: 7px 0 0; max-width: 700px;
+    font-size: 14px; line-height: 1.55; color: var(--text-2);
+  }
+  h3 { font-size: 15px; line-height: 1.4; margin: 26px 0 8px; letter-spacing: -0.01em; }
+  h3 .mini {
+    margin-left: 7px; font-family: var(--mono); font-size: 9px;
+    letter-spacing: 0.1em; color: var(--text-3); text-transform: uppercase; font-weight: 400;
+  }
+  p { margin: 0 0 12px; }
+  .muted { color: var(--text-3); }
+  .small { font-size: 12px; }
+  ul, ol { margin: 8px 0 14px; padding-left: 20px; }
+  li { margin: 4px 0; color: var(--text-2); }
+  li::marker { color: var(--text-3); }
+  li strong { color: var(--text); font-weight: 600; }
+  .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
+  .card {
+    padding: 14px 15px;
+    border: 1px solid var(--line); border-radius: 8px;
+    background: var(--panel);
+  }
+  .card h3, .card h4 { margin: 0 0 5px; font-size: 13px; }
+  .card p { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--text-2); }
+  .card .kicker {
+    display: block; margin-bottom: 6px;
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--text-3);
+  }
+  .callout {
+    margin: 16px 0; padding: 12px 14px;
+    border: 1px solid var(--line); border-left: 2px solid var(--text);
+    border-radius: 6px; background: var(--wash);
+    font-size: 12.5px; line-height: 1.6; color: var(--text-2);
+  }
+  .callout .label {
+    display: block; margin-bottom: 3px;
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--text-3);
+  }
+  .callout strong { color: var(--text); }
+  .callout p:last-child { margin-bottom: 0; }
+  .table-wrap {
+    margin: 14px 0; border: 1px solid var(--line); border-radius: 7px;
+    overflow-x: auto; background: var(--panel);
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; line-height: 1.5; }
+  th {
+    padding: 9px 12px; text-align: left;
+    border-bottom: 1px solid var(--line-2);
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--text-3); font-weight: 500; white-space: nowrap;
+  }
+  td { padding: 9px 12px; border-top: 1px solid var(--line); vertical-align: top; color: var(--text-2); }
+  tr:first-child td { border-top: 0; }
+  td strong, th strong { color: var(--text); font-weight: 600; }
+  td code { white-space: nowrap; }
+  .nowrap { white-space: nowrap; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 7px; border: 1px solid var(--line-2); border-radius: 999px;
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--text-2); white-space: nowrap;
+  }
+  .pill.tools { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .pill.chat { border-style: dashed; color: var(--text-3); }
+  .tag {
+    display: inline-block;
+    padding: 1px 5px; border: 1px solid var(--line); border-radius: 4px;
+    font-family: var(--mono); font-size: 9px; color: var(--text-3); white-space: nowrap;
+  }
+  .steps { counter-reset: step; display: grid; gap: 8px; margin: 14px 0; }
+  .step {
+    display: grid; grid-template-columns: 26px minmax(0, 1fr);
+    gap: 10px; padding: 11px 13px;
+    border: 1px solid var(--line); border-radius: 7px; background: var(--panel);
+  }
+  .step::before {
+    counter-increment: step; content: "0" counter(step);
+    font-family: var(--mono); font-size: 9.5px; color: var(--text-3); padding-top: 2px;
+  }
+  .step b { display: block; font-size: 12.5px; margin-bottom: 2px; }
+  .step p { margin: 0; font-size: 12px; line-height: 1.55; color: var(--text-2); }
+  .keys { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 20px; margin: 10px 0 14px; }
+  .keys div { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+  .keys span { color: var(--text-3); text-align: right; }
+  /* -- FAQ -------------------------------------------------------------- */
+  .faq { border-top: 1px solid var(--line); margin-top: 6px; }
+  .faq details { border-bottom: 1px solid var(--line); }
+  .faq summary {
+    display: flex; gap: 10px; align-items: baseline;
+    padding: 12px 0; cursor: pointer; list-style: none;
+    font-size: 13.5px; font-weight: 600; color: var(--text);
+  }
+  .faq summary::-webkit-details-marker { display: none; }
+  .faq summary::before {
+    content: "+"; width: 10px; flex: none; font-family: var(--mono);
+    font-weight: 400; color: var(--text-3);
+  }
+  .faq details[open] summary::before { content: "−"; }
+  .faq details > div { padding: 0 0 13px 20px; font-size: 12.5px; line-height: 1.65; color: var(--text-2); }
+  .faq details > div p:last-child { margin-bottom: 0; }
+  /* -- errors ----------------------------------------------------------- */
+  .err-toolbar {
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    margin: 14px 0 8px;
+  }
+  .chip {
+    padding: 4px 9px; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 999px; background: transparent;
+    font: inherit; font-family: var(--mono); font-size: 9.5px;
+    letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3);
+  }
+  .chip:hover { border-color: var(--text-3); color: var(--text); }
+  .chip[aria-pressed="true"] { background: var(--text); border-color: var(--text); color: var(--bg); }
+  .err-search {
+    display: flex; align-items: center; gap: 8px;
+    margin: 10px 0 4px; padding: 9px 12px;
+    border: 1px solid var(--line-2); border-radius: 7px;
+    background: var(--panel); color: var(--text-3);
+  }
+  .err-search:focus-within { border-color: var(--text-3); }
+  .err-search input {
+    flex: 1; min-width: 0; border: 0; outline: 0; background: transparent;
+    color: var(--text); font: inherit; font-size: 13px;
+  }
+  .err-search input::placeholder { color: var(--text-3); }
+  .err-search kbd { font-size: 9px; opacity: 0.8; }
+  .err-count {
+    margin-left: auto; white-space: nowrap;
+    font-family: var(--mono); font-size: 10px; color: var(--text-3);
+  }
+  .err-grid { display: grid; gap: 7px; margin: 12px 0 0; }
+  .err-card {
+    border: 1px solid var(--line); border-radius: 7px;
+    background: var(--panel);
+  }
+  .err-card[hidden] { display: none; }
+  .err-card summary {
+    display: grid; grid-template-columns: 34px minmax(0, 1fr) auto 14px;
+    gap: 10px; align-items: center;
+    padding: 10px 12px; cursor: pointer; list-style: none;
+  }
+  .err-card summary::-webkit-details-marker { display: none; }
+  .err-card summary:hover { background: var(--wash); }
+  .err-id { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.08em; color: var(--text-3); }
+  .err-title { font-size: 13px; font-weight: 600; line-height: 1.4; }
+  .err-title code { font-weight: 500; }
+  .err-area {
+    font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-3); white-space: nowrap;
+  }
+  .err-card summary::after {
+    content: "+"; font-family: var(--mono); font-size: 13px;
+    color: var(--text-3); text-align: center;
+  }
+  .err-card[open] summary::after { content: "−"; }
+  .err-card[open] { border-color: var(--line-2); }
+  .err-body { padding: 0 12px 13px 56px; }
+  .exact {
+    display: block; margin: 0 0 9px; padding: 7px 9px;
+    border: 1px solid var(--line); border-radius: 5px;
+    background: var(--bg); color: var(--text-3);
+    font-size: 10.5px; line-height: 1.5; overflow-wrap: anywhere;
+  }
+  .err-body dl { margin: 0; display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 5px 9px; }
+  .err-body dt {
+    padding-top: 2px;
+    font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-3);
+  }
+  .err-body dd { margin: 0; font-size: 12px; line-height: 1.55; color: var(--text-2); }
+  .err-body dd b { color: var(--text); font-weight: 600; }
+  .err-body dl .fix { color: var(--text); }
+  .err-none {
+    margin: 14px 0; padding: 22px; text-align: center;
+    border: 1px dashed var(--line-2); border-radius: 7px;
+    font-size: 13px; color: var(--text-3);
+  }
+  /* -- footer ----------------------------------------------------------- */
+  .footer {
+    display: flex; flex-wrap: wrap; gap: 10px 20px; align-items: baseline;
+    margin-top: 64px; padding-top: 16px; border-top: 1px solid var(--line);
+    font-size: 10.5px; color: var(--text-3);
+  }
+  .footer b { color: var(--text-2); font-weight: 600; }
+  .footer .to-top { margin-left: auto; text-decoration: none; }
+  .footer .to-top:hover { color: var(--text); }
+  /* -- responsive ------------------------------------------------------- */
+  @media (max-width: 1340px) {
+    .docs-shell { grid-template-columns: 222px minmax(0, 1fr); }
+    .docs-toc { display: none; }
+  }
+  @media (max-width: 1040px) {
+    .docs-shell { grid-template-columns: 1fr; }
+    .docs-side { display: none; }
+    .wrap { max-width: 920px; padding: 0 32px 90px; }
+  }
+  @media (max-width: 820px) {
+    .topbar-in { gap: 12px; padding: 10px 18px; }
+    .version { display: none; }
+    .doc-search { max-width: none; }
+    .doc-search kbd { display: none; }
+    .wrap { padding: 0 18px 72px; }
+    .hero { padding: 40px 0 28px; }
+    .lede { font-size: 15px; }
+    .grid-2, .keys { grid-template-columns: 1fr; }
+    .doc-section { padding-top: 42px; }
+    .err-card summary { grid-template-columns: 30px minmax(0, 1fr) 14px; }
+    .err-area { display: none; }
+    .err-body { padding-left: 12px; }
+  }
+  @media (max-width: 560px) {
+    .brand .doc { display: none; }
+    .topbar-in { padding: 9px 14px; }
+    .doc-search { padding: 6px 9px; }
+    .doc-results { left: -2px; right: -2px; }
+    .section-head { grid-template-columns: 1fr; }
+    .section-num { padding-top: 0; margin-bottom: 3px; }
+    .err-card summary { grid-template-columns: 26px minmax(0, 1fr) 14px; gap: 7px; }
+    .err-title { font-size: 12.5px; }
+    .err-body dl { grid-template-columns: 1fr; gap: 1px; }
+    .err-body dt { padding-top: 6px; }
+    .err-count { width: 100%; margin-left: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+  }
+  @media print {
+    :root { --bg: #ffffff; --panel: #ffffff; --text: #000000; --text-2: #222222; --text-3: #555555; --line: #cccccc; --line-2: #aaaaaa; }
+    body { background: #ffffff; font-size: 10.5pt; }
+    .topbar, .docs-side, .docs-toc, .hero-actions, .err-toolbar, .skip { display: none !important; }
+    .docs-shell { display: block; }
+    .wrap { max-width: none; padding: 0; }
+    .doc-section { break-inside: avoid; padding-top: 24px; }
+    .err-card { break-inside: avoid; }
+    .err-card summary::after { display: none; }
+    a { text-decoration: none; }
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="topbar-in">
+    <a class="brand" href="#top" aria-label="CODEZY docs home">
+      <span class="ring" aria-hidden="true"></span>
+      <span>CODEZY</span><span class="doc">/ MANUAL</span>
+    </a>
+    <div class="doc-search" id="docSearchWrap">
+      <span class="search-mark" aria-hidden="true">/</span>
+      <input id="docSearchInput" type="search" placeholder="Search the manual" aria-label="Search the manual"
+        autocomplete="off" spellcheck="false" aria-controls="docResults" aria-expanded="false" />
+      <kbd>Ctrl K</kbd>
+      <div class="doc-results" id="docResults" hidden></div>
+    </div>
+    <span class="version">v3.1.6</span>
+  </div>
+</header>
+
+<main id="main">
+  <div class="docs-shell">
+    <aside class="docs-side" aria-label="Manual">
+      <nav class="nav" aria-label="Sections">
+        <p class="nav-label">Guide</p>
+        <a href="#start" class="active" aria-current="true">Start here</a>
+        <a href="#models">Models that work</a>
+        <a href="#chat">Chat and files</a>
+        <a href="#cli">Terminal</a>
+        <a href="#settings">Settings and data</a>
+        <p class="nav-label">Reference</p>
+        <a href="#errors">Known errors <span class="count">37</span></a>
+        <a href="#faq">Short FAQ</a>
+        <a href="#changelog">What changed</a>
+      </nav>
+    </aside>
+
+    <div class="wrap">
+  <section class="hero" id="top" aria-labelledby="heroTitle">
+    <p class="eyebrow"><span class="dot" aria-hidden="true"></span> Field manual · 3.1.6 · October 2026</p>
+    <h1 id="heroTitle">Your files. Your models.<br /><span>Your machine.</span></h1>
+    <p class="lede">
+      CODEZY is a permissioned bridge between a language model and one folder on your disk.
+      This page covers the short version: <strong>install it, pick a tool-capable model, link a folder,
+      and fix the errors that actually happen.</strong>
+    </p>
+    <p class="hero-meta">
+      <span>13 agent tools</span>
+      <span>7 recommended models</span>
+      <span>37 known errors</span>
+      <span>No account · no telemetry</span>
+    </p>
+    <div class="hero-actions">
+      <a class="btn primary" href="#start">Start here →</a>
+      <a class="btn" href="#models">Pick a model</a>
+      <a class="btn" href="#errors">Search errors</a>
+    </div>
+  </section>
+
+  <!-- 01 ----------------------------------------------------------------->
+  <section class="doc-section" id="start">
+    <div class="section-head">
+      <span class="section-num">01</span>
+      <div>
+        <h2>Start here</h2>
+        <p class="sub">One installer, one model, one folder. You can make a real edit in about ten minutes.</p>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <span class="kicker">Recommended</span>
+        <h3 id="install-windows">Windows installer</h3>
+        <p>Run <code>CODEZY-Setup-3.1.6.exe</code>. The build is unsigned, so SmartScreen may ask for <b>More info → Run anyway</b>. Your data survives upgrades.</p>
+      </div>
+      <div class="card">
+        <span class="kicker">Terminal or source</span>
+        <h3 id="install-cli">CLI and development</h3>
+        <p><code>npm i codezy-cli</code> for the terminal (add <code>-g</code> to put <code>codezy</code> on your PATH). From a checkout: <code>npm install</code>, then <code>npm run dev</code>. The CLI needs Node 18+.</p>
+      </div>
+    </div>
+
+    <h3 id="four-steps">Four steps</h3>
+    <div class="steps">
+      <div class="step"><div><b>Install, then launch.</b><p>Ollama should be running at <code>http://127.0.0.1:11434</code>. A 7B Q4 model wants roughly 8 GB of free RAM.</p></div></div>
+      <div class="step"><div><b>Pull a tool-capable model.</b><pre><code>ollama pull qwen2.5-coder:7b
+ollama list</code></pre><p>This is the default recommendation. Chat works without tools; agent mode does not.</p></div></div>
+      <div class="step"><div><b>Link the project folder.</b><p>Use the folder button in the composer. That folder is both the context and the security boundary.</p></div></div>
+      <div class="step"><div><b>Ask for one concrete edit.</b><p><em>“Read index.html and change the h1 to ‘Hello from CODEZY’. Make the edit now.”</em> Accept the edit card or approval, then open the preview.</p></div></div>
+    </div>
+
+    <h3 id="smoke-test">Five-minute smoke test</h3>
+    <pre><code>List the files you can see, then quote the first heading of index.html.
+Change that heading to "Hello from CODEZY".
+Search the web for the latest Ollama release and cite the URL.</code></pre>
+    <p class="small muted">If the first line fails, the model is not receiving the folder or is too weak to follow the setup card. Start a new chat and read <a href="#e10">E10</a>; do not argue with a poisoned transcript.</p>
+
+    <h3 id="first-send">What the first send actually does</h3>
+    <ul>
+      <li>Checks Ollama, then asks <code>/api/show</code> what the selected model can do.</li>
+      <li>Builds a system prompt with a <strong>setup card</strong> (folder, edit mode, web mode, model limits) and the folder tree. Classic mode also receives the <strong>real file contents</strong> of text files.</li>
+      <li>Repeats the setup facts as a synthetic turn immediately before your question. Small models weight the newest turn most heavily.</li>
+      <li>Uses agent mode only when the chat has a folder, agent mode is on, and the model reports tool support.</li>
+    </ul>
+
+    <div class="callout">
+      <span class="label">Upgrading from an older build</span>
+      Agent mode used to be a buried opt-in. 3.1.5 turns it on <strong>once</strong> for existing settings via the <code>agentModeMigrated</code> marker. Check Settings → Agent → Reply &amp; agent mode; turn it off there if you deliberately want the old behavior.
+    </div>
+  </section>
+
+  <!-- 02 ----------------------------------------------------------------->
+  <section class="doc-section" id="models">
+    <div class="section-head">
+      <span class="section-num">02</span>
+      <div>
+        <h2>Models that work</h2>
+        <p class="sub">A model can be brilliant at code and still be unable to run agent mode. Tool calling is the gate — not size, not benchmark rank.</p>
+      </div>
+    </div>
+
+    <p>
+      The picker badges installed models from Ollama’s capabilities.
+      <span class="pill tools">tools</span> means agent mode can read, search and write;
+      <span class="pill chat">chat only</span> means edits use classic blocks.
+      The table is a starting point; the runtime probe is the final word.
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Model</th><th>Agent</th><th>RAM (Q4)</th><th>Best at</th></tr></thead>
+        <tbody>
+          <tr><td><strong>qwen2.5-coder:7b</strong> <span class="tag">default</span></td><td><span class="pill tools">tools</span></td><td class="nowrap">~8 GB</td><td>Everyday agent work. Best quality per GB; start here.</td></tr>
+          <tr><td><strong>qwen2.5-coder:14b</strong></td><td><span class="pill tools">tools</span></td><td class="nowrap">~12 GB</td><td>Sharper multi-file edits; slow if it spills to CPU.</td></tr>
+          <tr><td><strong>qwen2.5-coder:32b</strong></td><td><span class="pill tools">tools</span></td><td class="nowrap">~24 GB</td><td>Best local quality. Needs a large GPU or a lot of RAM.</td></tr>
+          <tr><td><strong>qwen3:8b</strong></td><td><span class="pill tools">tools</span></td><td class="nowrap">~8 GB</td><td>Reasoning and tools; thinking mode feels slower.</td></tr>
+          <tr><td><strong>llama3.1:8b</strong></td><td><span class="pill tools">tools</span></td><td class="nowrap">~8 GB</td><td>Reliable general chat and tools; less code-specialised.</td></tr>
+          <tr><td><strong>codellama:13b</strong></td><td><span class="pill chat">chat only</span></td><td class="nowrap">~10 GB</td><td>Completion and classic edits. No tool calling.</td></tr>
+          <tr><td><strong>llama2-uncensored:7b</strong></td><td><span class="pill chat">chat only</span></td><td class="nowrap">~6 GB</td><td>Chat only; not a coding default.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="probe">Check a model yourself <span class="mini">the runtime probe</span></h3>
+    <pre><code>ollama show qwen2.5-coder:7b   # capabilities: completion, tools, insert
+ollama show codellama:13b      # completion only — no tools
+
+# the exact call CODEZY makes (PowerShell)
+Invoke-RestMethod http://127.0.0.1:11434/api/show `
+  -Method Post -ContentType 'application/json' `
+  -Body '{"model":"qwen2.5-coder:7b"}' | ConvertTo-Json -Depth 4</code></pre>
+    <p>If <code>tools</code> is absent, agent mode cannot run on that model. Classic edit blocks still work.</p>
+
+    <div class="callout">
+      <span class="label">The 400 you should not debug</span>
+      <pre style="margin:9px 0 7px"><code>Ollama error 400: {"error":"registry.ollama.ai/library/codellama:13b does not support tools"}</code></pre>
+      The model never supported the tools schema. 3.1.5 detects that before sending, states it in the setup card, and uses classic mode with your real files instead of letting the engine throw. See <a href="#e09">E09</a>.
+    </div>
+
+    <h3 id="by-machine">Choosing by machine</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Your machine</th><th>Pick</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td>8 GB RAM, integrated GPU</td><td><code>qwen2.5-coder:7b</code></td><td>Fits with Windows open; expect token-by-token speed.</td></tr>
+          <tr><td>16 GB RAM, 8 GB VRAM</td><td><code>:7b</code>, try <code>:14b</code></td><td>The 14B is better but may spill. Measure with <code>ollama ps</code>.</td></tr>
+          <tr><td>32 GB+ RAM, 24 GB VRAM</td><td><code>:32b</code></td><td>Best local coding quality; still slower than a hosted model.</td></tr>
+          <tr><td>No tools needed</td><td><code>codellama:13b</code></td><td>Classic mode includes the real files, so a completion model can still edit.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="small muted">RAM math is not file size: a 7B Q4 file is ~4.5 GB, but loading it needs KV cache and overhead. <code>ollama ps</code> shows the real GPU/CPU split. The composer changes the model for <b>this chat</b>; Settings → Models → Providers &amp; endpoint changes the default for new chats. A cloud picker badge is a hint, not a promise — a 400 triggers the same classic fallback.</p>
+  </section>
+
+  <!-- 03 ----------------------------------------------------------------->
+  <section class="doc-section" id="chat">
+    <div class="section-head">
+      <span class="section-num">03</span>
+      <div>
+        <h2>Chat, files and agent mode</h2>
+        <p class="sub">Two ways to change the same folder: classic edit blocks, or the agent tool loop. Both stay inside the linked folder.</p>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>&nbsp;</th><th>Classic chat</th><th>Agent mode</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Turned on by</strong></td><td>No folder, <code>v2</code> off, or a model without tools</td><td>Folder + <code>v2</code> + <span class="pill tools">tools</span></td></tr>
+          <tr><td><strong>What it sees</strong></td><td>Tree + real text-file contents + setup card</td><td>Tree; reads files itself with <code>read_file</code></td></tr>
+          <tr><td><strong>How it edits</strong></td><td><code>===FILE</code> / <code>===SEARCH</code> / <code>===REPLACE</code></td><td><code>write_file</code>, <code>edit_file</code></td></tr>
+          <tr><td><strong>How it searches</strong></td><td>The app attaches results before the turn</td><td>The model calls <code>web_search</code> / <code>web_fetch</code></td></tr>
+          <tr><td><strong>Approval</strong></td><td>One accept-edits card per reply</td><td>Per-action dialog for write / edit / run</td></tr>
+          <tr><td><strong>Best for</strong></td><td>Questions, small edits, non-tool models</td><td>Multi-file work, exploration, tests, long tasks</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="small muted">Resolution order: <code>v2</code> on → a linked folder exists → the provider is Ollama (probe) or cloud (assumed) → <code>/api/show</code> reports <code>tools</code>. Only then is the tools schema attached. A “does not support tools” 400 triggers one classic retry with a readable notice.</p>
+
+    <h3 id="link-folder">Linking a folder</h3>
+    <ul>
+      <li>The tree is always injected; hidden folders, <code>node_modules</code>, <code>.git</code> and build output are skipped.</li>
+      <li>Classic mode also injects text files root-first, up to ~14,000 characters. Files over 64 KB, binaries and NUL-containing files are skipped.</li>
+      <li>The classic injector skips secret-looking files (<code>.env</code>, <code>.npmrc</code>, private keys, <code>.pem</code>, <code>.p12</code>). Agent tools can read what you link, so link a project — not your home folder.</li>
+      <li>Clearing the link does not delete anything. Two chats can point at different projects.</li>
+    </ul>
+
+    <h3 id="edit-blocks">The edit-block language <span class="mini">classic mode</span></h3>
+    <pre><code>===FILE: index.html
+===SEARCH
+&lt;h1&gt;My cats&lt;/h1&gt;
+===REPLACE
+&lt;h1&gt;Hello from CODEZY&lt;/h1&gt;
+===END</code></pre>
+    <ul>
+      <li><strong>Existing file:</strong> the SEARCH text must match exactly once, indentation included. Small hunks beat full rewrites.</li>
+      <li><strong>New file:</strong> SEARCH is the single word <code>EMPTY</code>; REPLACE is the complete file.</li>
+      <li><strong>No header, no write.</strong> A block without <code>===FILE:</code> is ignored. Leading code fences are tolerated.</li>
+    </ul>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Action</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Accept</strong></td><td>Writes the selected hunks after backing up the previous version. Undo is offered in the toast.</td></tr>
+          <tr><td><strong>Always</strong></td><td>Applies and stops asking for this file in the session.</td></tr>
+          <tr><td><strong>Decline</strong></td><td>Leaves disk untouched; the proposal stays in the transcript.</td></tr>
+          <tr><td><strong>/undo</strong> · <strong>/history</strong></td><td>Reverts the last batch, or restores any safety copy.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="small muted"><span class="pill">plan</span> forbids edits. <span class="pill">build</span> asks before each apply. <span class="pill">auto</span> applies immediately and backs up. Path confinement and destructive-command rejection still apply in auto.</p>
+
+    <h3 id="agent-tools">The 13 agent tools</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Tool</th><th>What it does</th><th>Gate</th></tr></thead>
+        <tbody>
+          <tr><td><code>list_dir</code></td><td>List a folder inside the workspace.</td><td>read-only</td></tr>
+          <tr><td><code>read_file</code></td><td>Read a text file; pages large files with offset/limit.</td><td>read-only</td></tr>
+          <tr><td><code>glob</code></td><td>Find files by pattern; skips build and junk folders.</td><td>read-only</td></tr>
+          <tr><td><code>grep_search</code></td><td>Regex search across files; returns <code>file:line</code>.</td><td>read-only</td></tr>
+          <tr><td><code>write_file</code></td><td>Create or overwrite a text file.</td><td><strong>approval</strong></td></tr>
+          <tr><td><code>edit_file</code></td><td>Replace exact <code>old</code> text with <code>new</code>.</td><td><strong>approval</strong></td></tr>
+          <tr><td><code>run_command</code></td><td>Run a command; can background a server or build.</td><td><strong>approval</strong></td></tr>
+          <tr><td><code>web_search</code></td><td>Query DuckDuckGo; returns titles, URLs, snippets.</td><td>read-only</td></tr>
+          <tr><td><code>web_fetch</code></td><td>Open an http(s) URL and return readable text.</td><td>read-only</td></tr>
+          <tr><td><code>todo_write</code></td><td>Save the complete checklist for the task.</td><td>state</td></tr>
+          <tr><td><code>task_status</code></td><td>Poll or stop a background task.</td><td>state</td></tr>
+          <tr><td><code>delegate</code></td><td>Hand a self-contained sub-task to a fresh agent.</td><td>sub-agent</td></tr>
+          <tr><td><code>ask_user</code></td><td>Ask one clarifying question and wait.</td><td>question</td></tr>
+          <tr><td><code>mcp__&lt;server&gt;__&lt;tool&gt;</code></td><td>A tool exposed by a configured MCP server.</td><td>depends on the server</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <ul>
+      <li><strong>Approvals:</strong> build mode pauses before <code>write_file</code>, <code>edit_file</code> and <code>run_command</code>. Reads and state tools do not prompt.</li>
+      <li><strong>Auto:</strong> the desktop still writes backups and keeps <code>/undo</code>. The CLI’s <code>--auto</code> does neither — run it on a branch.</li>
+      <li><strong>Path guard:</strong> every model-supplied path is resolved against the linked roots. Outside means refused before any I/O: <code>path outside the linked folders: C:\Users\you\secrets.txt</code>. See <a href="#e18">E18</a>.</li>
+      <li><strong>Destructive commands</strong> are rejected before approval. Hung model waits and commands have wall-clock caps.</li>
+      <li><strong>Desktop backups</strong> live under <code>~/.codezy/backups/&lt;session&gt;</code>. The CLI relies on Git or your own copy.</li>
+    </ul>
+
+    <h3 id="web-search">Web search</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Web chip</th><th>Classic chat</th><th>Agent</th></tr></thead>
+        <tbody>
+          <tr><td><strong>auto</strong> (default)</td><td>Searches when the question needs current facts and attaches evidence.</td><td>Unchanged: tools are always available.</td></tr>
+          <tr><td><strong>always</strong></td><td>Searches every turn, even for local questions.</td><td>Unchanged.</td></tr>
+          <tr><td><strong>off</strong></td><td>No pre-search; the setup card says the web is off.</td><td>Unchanged — the chip is a classic-chat setting.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      Search tries DuckDuckGo HTML, then its Instant Answer API, then Wikipedia. A 202 challenge or 429 is upstream, not a missing key; retry, switch network, or paste a URL and use <code>web_fetch</code>. Results are plain text evidence — no headless browser, no persisted pages. A small classic model can still ignore the evidence and claim it cannot browse: that is <a href="#e11">E11</a>, not a search bug.
+    </p>
+
+    <h3 id="preview">Live preview</h3>
+    <ul>
+      <li><code>codezy-preview://&lt;sessionId&gt;/&lt;path&gt;</code> serves the linked folder directly. Relative CSS, JS and images resolve.</li>
+      <li>Opens <code>index.html</code> at the root, or the first HTML file in a shallow scan (depth 3, 40 files).</li>
+      <li>A file watcher reloads the pane after the agent writes. Viewport presets: fit, desktop, tablet, phone.</li>
+      <li>It is <strong>not a dev server</strong>: no HMR, no Node runtime, no SSR. Vite/Next apps need their own server. Traversal outside the roots is blocked by the same path guard. See <a href="#e29">E29</a>.</li>
+    </ul>
+  </section>
+
+  <!-- 04 ----------------------------------------------------------------->
+  <section class="doc-section" id="cli">
+    <div class="section-head">
+      <span class="section-num">04</span>
+      <div>
+        <h2>Terminal</h2>
+        <p class="sub">The same settings, sessions and harness without Electron. Best for long multi-file jobs, scripting and CI.</p>
+      </div>
+    </div>
+
+    <pre><code>npm i codezy-cli                 # add -g to put codezy on your PATH
+npm i -g .                       # or: from a checkout of the CLI repo
+
+codezy                           # interactive chat TUI
+codezy "explain this error"      # one-shot, then exit
+codezy exec "fix the tests" --auto
+codezy --agent --dir ../my-repo  # agent REPL over a folder
+codezy doctor                    # install / settings / endpoint / model / git</code></pre>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Flag</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>-p, --print &lt;prompt&gt;</code></td><td>One-shot; omit the value to read stdin.</td></tr>
+          <tr><td><code>-a, --agent</code></td><td>Use the tool-calling agent (tools + approvals).</td></tr>
+          <tr><td><code>--model &lt;id&gt;</code></td><td>Override the settings model for this run.</td></tr>
+          <tr><td><code>--dir &lt;path&gt;</code></td><td>Workspace root. Agent mode needs one.</td></tr>
+          <tr><td><code>--auto</code></td><td>Approve gated tools automatically for this run.</td></tr>
+          <tr><td><code>-c, --continue</code></td><td>Resume the last saved agent session.</td></tr>
+          <tr><td><code>--output-format &lt;fmt&gt;</code></td><td>One-shot output: <code>text</code>, <code>json</code> or <code>stream-json</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="repl">The agent REPL</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Command</th><th>Does</th></tr></thead>
+        <tbody>
+          <tr><td><code>/root [dir]</code></td><td>Show or set the workspace root.</td></tr>
+          <tr><td><code>/todos</code></td><td>Show the current checklist.</td></tr>
+          <tr><td><code>/model [id]</code></td><td>Show or switch the model. <code>/model fast &lt;id&gt;</code> sets the cheap model for summaries.</td></tr>
+          <tr><td><code>/thinking</code> · <code>/auto</code></td><td>Toggle long reasoning or automatic approvals.</td></tr>
+          <tr><td><code>/search &lt;q&gt;</code></td><td>Web search without involving the model.</td></tr>
+          <tr><td><code>/compact</code> · <code>/resume</code></td><td>Summarize older context, or restore a saved session.</td></tr>
+          <tr><td><code>/tools</code> · <code>/mcp</code></td><td>List agent tools, including MCP, or server status.</td></tr>
+          <tr><td><code>/usage</code> · <code>/export</code></td><td>Tokens used, or save the transcript as Markdown.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p><code>codezy doctor --json</code> is the machine-readable form. Exit codes: <code>0</code> OK, <code>1</code> runtime error, <code>2</code> usage error.</p>
+
+    <p>Every command documents itself: <code>codezy --help</code>, <code>codezy exec --help</code> and <code>codezy doctor --help</code> print command-specific text with aligned options, a short “what it does”, and exit codes. The REPL banner reports the model’s capability (<span class="pill tools">tools</span> or <span class="pill chat">chat only</span>) from <code>/api/show</code>; <code>/model</code> re-probes after a switch.</p>
+
+    <p>The agent REPL keeps one quiet phase line while a local model thinks: <code>step 3: run command npm test…</code>. It is drawn with <code>nanospinner</code>, adds elapsed seconds after two, drops frames while you type or answer an approval, and stays off in pipes. The loop is driven directly instead of <code>start()</code>, so Ctrl+C still interrupts a turn. The chat TUI has its own built-in spinner.</p>
+
+    <div class="callout">
+      <span class="label">Automation that runs unattended</span>
+      <code>codezy exec "…" --auto</code> does not ask before writes and does not create desktop-style backups. Run it on a branch or a disposable checkout. Path confinement and destructive-command rejection still apply. See <a href="#e23">E23</a>.
+    </div>
+  </section>
+
+  <!-- 05 ----------------------------------------------------------------->
+  <section class="doc-section" id="settings">
+    <div class="section-head">
+      <span class="section-num">05</span>
+      <div>
+        <h2>Settings, data and shortcuts</h2>
+        <p class="sub">The controls that change behavior, the files that hold your data, and the keys worth remembering.</p>
+      </div>
+    </div>
+
+    <p>Settings is grouped into six categories: <b>General</b> (profile, appearance, notifications and input), <b>Models</b> (providers, endpoint, model guide), <b>Agent</b> (reply mode, instructions), <b>Tools</b> (MCP servers), <b>Data</b> (storage, memory, backup) and <b>About</b>. Every control from the old single page is still there; the palette’s Settings jumps open the right category before scrolling.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Setting</th><th>Values</th><th>What it changes</th></tr></thead>
+        <tbody>
+          <tr><td><code>ollamaUrl</code></td><td>URL</td><td>Default <code>http://127.0.0.1:11434</code>; point it at remote Ollama if needed.</td></tr>
+          <tr><td><code>activeModel</code></td><td>model id</td><td>Default for new chats; a chat’s own picker overrides it.</td></tr>
+          <tr><td><code>v2</code></td><td>true / false</td><td>Agent mode. On after the 3.1.5 migration; still needs a folder and a tool model.</td></tr>
+          <tr><td><code>webSearch</code></td><td>auto · always · off</td><td>Classic-chat pre-search. Agent tools are independent.</td></tr>
+          <tr><td><code>mode</code></td><td>plan · build · auto</td><td>Edit policy. Auto applies immediately; the desktop backs up first.</td></tr>
+          <tr><td><code>effort</code> · <code>thinkingMode</code></td><td>light / medium / deep · on / off</td><td>Reasoning and step budget.</td></tr>
+          <tr><td><code>providers</code></td><td>array</td><td>OpenAI-compatible endpoints and their API keys.</td></tr>
+          <tr><td><code>dataDir</code></td><td>path</td><td>Move sessions, memory, skills and backups. A boot pointer stays behind.</td></tr>
+          <tr><td><code>mcpServers</code></td><td>array</td><td>stdio MCP servers. See below.</td></tr>
+          <tr><td><code>autoUpdate</code></td><td>true / false</td><td>Check GitHub for a newer build on launch.</td></tr>
+          <tr><td><code>enterSends</code></td><td>true / false</td><td>Enter sends vs Ctrl+Enter sends.</td></tr>
+          <tr><td><code>agentModeMigrated</code></td><td>true</td><td>One-time 3.1.5 marker. Absent on old settings; never recreates.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="mcp">MCP servers <span class="mini">optional</span></h3>
+    <p>Settings → Tools → MCP servers adds a local stdio server; its tools join the agent as <code>mcp__&lt;server&gt;__&lt;tool&gt;</code>. Use an absolute command if <code>npx</code> is not on the app’s PATH. One broken server is isolated. Tools are agent-only. <strong>Third-party MCP tools are not automatically approval-gated</strong> — CODEZY gates its own writes and commands, not a server’s. Treat any server as privileged code. See <a href="#e27">E27</a>.</p>
+    <pre><code>{
+  "name": "filesystem",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\work"],
+  "enabled": true
+}</code></pre>
+
+    <h3 id="paths">Where everything lives</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Path</th><th>Contents</th></tr></thead>
+        <tbody>
+          <tr><td><code>~/.codezy/settings.json</code></td><td>Shared settings, including provider keys. Never commit it.</td></tr>
+          <tr><td><code>~/.codezy/sessions/</code></td><td>One JSON per chat: messages, mode, folders, model, edits.</td></tr>
+          <tr><td><code>~/.codezy/backups/&lt;session&gt;/</code></td><td>Pre-edit copies used by <code>/undo</code> and <code>/history</code>.</td></tr>
+          <tr><td><code>~/.codezy/memory.md</code></td><td>Stored facts, when learning is on.</td></tr>
+          <tr><td><code>~/.codezy/skills/</code> · <code>goals.json</code></td><td>Playbooks for <code>/skill</code>, and active goals.</td></tr>
+          <tr><td><code>~/.codezy/agent/</code></td><td>CLI agent saves for <code>/resume</code>.</td></tr>
+          <tr><td><code>~/.codezy/logs/main.log</code></td><td>Launch, quit and exception lines. Rotated past 512 KiB.</td></tr>
+          <tr><td><code>%APPDATA%\CODEZY\</code></td><td>Electron cache. Not your chats; safe to reset when the app won’t boot.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Local inference stays on <code>127.0.0.1</code>. Sessions, memory and backups are not uploaded; there is no telemetry endpoint.
+      Web search sends only the query to DuckDuckGo/Wikipedia (or the URL you fetch). A cloud provider receives the prompt only when you select one.
+      To back up, close the app and copy <code>~/.codezy</code>.
+    </p>
+
+    <div class="callout">
+      <span class="label">Do not “fix” the app by deleting data</span>
+      For launch or blank-window problems, delete <code>%APPDATA%\CODEZY\Cache</code> and <code>GPUCache</code> only. Deleting <code>~/.codezy</code> removes chats, memory, backups and provider keys. For a corrupt settings file, rename it to <code>settings.bak.json</code> and restart.
+    </div>
+
+    <h3 id="shortcuts">Shortcuts</h3>
+    <div class="keys">
+      <div><kbd>Ctrl</kbd>+<kbd>N</kbd><span>New chat</span></div>
+      <div><kbd>Ctrl</kbd>+<kbd>K</kbd><span>Command palette</span></div>
+      <div><kbd>Ctrl</kbd>+<kbd>E</kbd><span>Cowork pane</span></div>
+      <div><kbd>Ctrl</kbd>+<kbd>B</kbd><span>Sidebar</span></div>
+      <div><kbd>Ctrl</kbd>+<kbd>,</kbd><span>Settings</span></div>
+      <div><kbd>Ctrl</kbd>+<kbd>F</kbd><span>Find in chat</span></div>
+      <div><kbd>Ctrl</kbd>+<kbd>Enter</kbd><span>Accept edits</span></div>
+      <div><kbd>Ctrl</kbd>+<kbd>P</kbd><span>Quick open file</span></div>
+      <div><kbd>Ctrl</kbd>+<kbd>S</kbd><span>Save open file</span></div>
+      <div><kbd>Esc</kbd><span>Close popover</span></div>
+      <div><kbd>↑</kbd> / <kbd>↓</kbd><span>Terminal history</span></div>
+      <div><kbd>y</kbd> / <kbd>a</kbd> / <kbd>s</kbd> / <kbd>d</kbd><span>Apply / always / skip / diff</span></div>
+    </div>
+  </section>
+
+  <!-- 06 ----------------------------------------------------------------->
+  <section class="doc-section" id="errors">
+    <div class="section-head">
+      <span class="section-num">06</span>
+      <div>
+        <h2>Known errors</h2>
+        <p class="sub">Search by symptom or exact engine text. Every entry is collapsed until you open it; each has a cause and a fix.</p>
+      </div>
+    </div>
+
+    <div class="err-toolbar" role="group" aria-label="Filter errors by area">
+      <button class="chip" type="button" data-area="all" aria-pressed="true">All</button>
+      <button class="chip" type="button" data-area="launch" aria-pressed="false">Launch</button>
+      <button class="chip" type="button" data-area="install" aria-pressed="false">Install</button>
+      <button class="chip" type="button" data-area="ollama" aria-pressed="false">Ollama</button>
+      <button class="chip" type="button" data-area="models" aria-pressed="false">Models</button>
+      <button class="chip" type="button" data-area="agent" aria-pressed="false">Agent</button>
+      <button class="chip" type="button" data-area="edits" aria-pressed="false">Edits</button>
+      <button class="chip" type="button" data-area="web" aria-pressed="false">Web</button>
+      <button class="chip" type="button" data-area="preview" aria-pressed="false">Preview</button>
+      <button class="chip" type="button" data-area="cli" aria-pressed="false">CLI</button>
+      <button class="chip" type="button" data-area="providers" aria-pressed="false">Providers</button>
+      <button class="chip" type="button" data-area="mcp" aria-pressed="false">MCP</button>
+      <button class="chip" type="button" data-area="workspace" aria-pressed="false">Workspace</button>
+      <span class="err-count" id="errCount" aria-live="polite">37 / 37 errors</span>
+    </div>
+
+    <label class="err-search" for="errSearch">
+      <span aria-hidden="true">⌕</span>
+      <input id="errSearch" type="search" placeholder="Search errors — symptom, exact text, fix…" autocomplete="off" aria-label="Search known errors" />
+      <kbd>/</kbd>
+    </label>
+    <p class="small muted">Press <kbd>/</kbd> anywhere to focus the search; <kbd>Esc</kbd> clears it. Opening a result reveals the cause and fix.</p>
+
+    <div class="err-grid" id="errGrid">
+
+      <details class="err-card" id="e01" data-area="launch">
+        <summary><span class="err-id">E01</span><span class="err-title">CODEZY won’t start — “Unable to move the cache”</span><span class="err-area">Launch</span></summary>
+        <div class="err-body">
+          <code class="exact">Unable to move the cache: Access is denied. (0x5)</code>
+          <dl>
+            <dt>Cause</dt><dd>Another CODEZY/Electron process still owns Chromium’s cache — often a stale <code>electron.exe</code> after a crash or a second window.</dd>
+            <dt>Fix</dt><dd class="fix">Quit every CODEZY window, end any <code>CODEZY</code>/<code>electron</code> process in Task Manager, delete <code>%APPDATA%\CODEZY\Cache</code> and <code>GPUCache</code>, then relaunch. Your chats live in <code>~/.codezy</code> — do not delete that.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e02" data-area="launch">
+        <summary><span class="err-id">E02</span><span class="err-title">Window opens blank after an update</span><span class="err-area">Launch</span></summary>
+        <div class="err-body">
+          <code class="exact">(no error — black/white window, no UI)</code>
+          <dl>
+            <dt>Cause</dt><dd>A stale GPU cache, a half-written renderer bundle, or a GPU driver rejecting the compositor.</dd>
+            <dt>Fix</dt><dd class="fix">Reset the cache as in <a href="#e01">E01</a>. Launch once with <code>--disable-gpu</code> (add it to the shortcut target). Check <code>~/.codezy/logs/main.log</code>. If it persists, reinstall 3.1.6 over the existing app; user data is preserved.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e03" data-area="install">
+        <summary><span class="err-id">E03</span><span class="err-title">Windows SmartScreen blocks the installer</span><span class="err-area">Install</span></summary>
+        <div class="err-body">
+          <code class="exact">Windows protected your PC</code>
+          <dl>
+            <dt>Cause</dt><dd>The build is not code-signed, so Windows shows the generic reputation warning.</dd>
+            <dt>Fix</dt><dd class="fix">Click <b>More info → Run anyway</b>. Verify the file hash/source first. Do not disable Defender or SmartScreen globally. If your organisation blocks unsigned installers, build from source or ask IT to sign it.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e04" data-area="install">
+        <summary><span class="err-id">E04</span><span class="err-title">Installer finishes, but CODEZY won’t open</span><span class="err-area">Install</span></summary>
+        <div class="err-body">
+          <code class="exact">(no window; no shortcut; nothing in Task Manager)</code>
+          <dl>
+            <dt>Cause</dt><dd>Antivirus quarantined the exe, the per-user install path was blocked, or a previous install is half-removed.</dd>
+            <dt>Fix</dt><dd class="fix">Look for <code>CODEZY.exe</code> under <code>%LOCALAPPDATA%\Programs\CODEZY</code> and run it directly. Check Defender’s protection history. Re-run the installer as your normal user (not elevated), then read <code>~/.codezy/logs/main.log</code>.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e05" data-area="cli install">
+        <summary><span class="err-id">E05</span><span class="err-title"><code>codezy</code> is not recognised</span><span class="err-area">CLI</span></summary>
+        <div class="err-body">
+          <code class="exact">'codezy' is not recognized as an internal or external command</code>
+          <dl>
+            <dt>Cause</dt><dd>npm’s global bin folder is not on PATH, or the package was not installed globally.</dd>
+            <dt>Fix</dt><dd class="fix">Run <code>npm config get prefix</code>, add its bin directory to PATH, then open a new terminal. Or use <code>npx -y -p codezy-cli codezy</code>. From a checkout of the CLI repo, <code>node index.mjs</code> always works.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e06" data-area="install cli">
+        <summary><span class="err-id">E06</span><span class="err-title">PowerShell refuses to run <code>npm.ps1</code></span><span class="err-area">Install</span></summary>
+        <div class="err-body">
+          <code class="exact">npm.ps1 cannot be loaded because running scripts is disabled on this system</code>
+          <dl>
+            <dt>Cause</dt><dd>The PowerShell execution policy blocks npm’s script wrapper.</dd>
+            <dt>Fix</dt><dd class="fix">Use <code>npm.cmd install -g codezy-cli</code>, or allow local scripts for your user: <code>Set-ExecutionPolicy -Scope CurrentUser RemoteSigned</code>. Do not set <code>Unrestricted</code> machine-wide. Open a new terminal afterwards.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e07" data-area="ollama">
+        <summary><span class="err-id">E07</span><span class="err-title">Can’t reach Ollama on 127.0.0.1:11434</span><span class="err-area">Ollama</span></summary>
+        <div class="err-body">
+          <code class="exact">fetch failed · ECONNREFUSED · Ollama is offline</code>
+          <dl>
+            <dt>Cause</dt><dd>Ollama is not running, crashed, is bound to another host/port, or a firewall blocks the loopback call.</dd>
+            <dt>Fix</dt><dd class="fix">Start the Ollama app or run <code>ollama serve</code>. Verify <code>ollama list</code> in a terminal. If you changed <code>OLLAMA_HOST</code>, update Settings → Models → Providers &amp; endpoint. CODEZY tries to start Ollama on the first chat, but it cannot if the binary is missing.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e08" data-area="models ollama">
+        <summary><span class="err-id">E08</span><span class="err-title">The model isn’t installed</span><span class="err-area">Models</span></summary>
+        <div class="err-body">
+          <code class="exact">model "…" not found · API error 404: model not found</code>
+          <dl>
+            <dt>Cause</dt><dd>The selected id is not in <code>ollama list</code>, the tag is wrong (<code>:7b</code> vs <code>:latest</code>), or a cloud provider uses a different model id.</dd>
+            <dt>Fix</dt><dd class="fix">Run <code>ollama pull &lt;id&gt;</code>, then pick it again. For a provider, copy the exact model id from its dashboard and check the base URL ends in <code>/v1</code> where required. See <a href="#e31">E31</a>.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e09" data-area="models agent">
+        <summary><span class="err-id">E09</span><span class="err-title">The model does not support tools (HTTP 400)</span><span class="err-area">Models</span></summary>
+        <div class="err-body">
+          <code class="exact">Ollama error 400: {"error":"registry.ollama.ai/library/codellama:13b does not support tools"}</code>
+          <dl>
+            <dt>Cause</dt><dd>The model was never trained for tool calling. <code>codellama</code>, <code>llama2-uncensored</code>, base models and embedding models only advertise <code>completion</code>.</dd>
+            <dt>Fix</dt><dd class="fix">Pick a model marked <span class="pill tools">tools</span>: <code>qwen2.5-coder:7b</code>, <code>qwen3:8b</code> or <code>llama3.1:8b</code>. 3.1.5 detects this before sending, states it in the setup card, and falls back to classic edit blocks with your real files. Verify with <code>ollama show &lt;model&gt;</code>.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e10" data-area="agent models">
+        <summary><span class="err-id">E10</span><span class="err-title">Model refuses to edit / says it can’t access files</span><span class="err-area">Agent</span></summary>
+        <div class="err-body">
+          <code class="exact">"I can’t make changes to files" · "Please copy the file here" · a list of suggestions</code>
+          <dl>
+            <dt>Cause</dt><dd>An old transcript is poisoning it, plan mode is on, no folder is linked, or the model is too small to follow the setup card. A non-tool model can still edit in classic mode but cannot browse.</dd>
+            <dt>Fix</dt><dd class="fix">Start a <b>new chat</b>; confirm the folder chip, mode = build, and a <span class="pill tools">tools</span> model. Ask one explicit instruction: “Change X in file Y now. Use the tools.” If it still refuses, switch models. Do not spend ten turns debating.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e11" data-area="web models">
+        <summary><span class="err-id">E11</span><span class="err-title">Model says it can’t browse the web</span><span class="err-area">Web</span></summary>
+        <div class="err-body">
+          <code class="exact">"I don’t have internet access" · "I can’t search the web"</code>
+          <dl>
+            <dt>Cause</dt><dd>The web chip is off, no results were attached this turn, the search upstream failed, or a classic model ignored the evidence block. Agent tools are independent of the chip.</dd>
+            <dt>Fix</dt><dd class="fix">Set the chip to <b>auto</b>, ask explicitly (“Search the web for … and cite the URLs”), and check <a href="#chat">the web table</a>. On a tool model, agent mode should call <code>web_search</code> itself. If upstream is challenged, see <a href="#e28">E28</a>.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e12" data-area="models">
+        <summary><span class="err-id">E12</span><span class="err-title">Context window exceeded</span><span class="err-area">Models</span></summary>
+        <div class="err-body">
+          <code class="exact">context length exceeded · too many tokens · exceeds num_ctx</code>
+          <dl>
+            <dt>Cause</dt><dd>The transcript plus injected folder contents plus attached files is larger than the model’s context. Long chats and large trees hit it first.</dd>
+            <dt>Fix</dt><dd class="fix">Start a new chat (the cleanest fix), detach large files, narrow the linked folder, or use the CLI’s <code>/compact</code>. In agent mode raise <code>--ctx</code> only if the model and RAM can afford it. A bigger context is not free.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e13" data-area="models ollama">
+        <summary><span class="err-id">E13</span><span class="err-title">Empty reply, crash, or out of memory</span><span class="err-area">Models</span></summary>
+        <div class="err-body">
+          <code class="exact">signal: killed · model runner exited · empty response</code>
+          <dl>
+            <dt>Cause</dt><dd>The model does not fit in RAM/VRAM, the quant is too large, or Ollama’s runner crashed.</dd>
+            <dt>Fix</dt><dd class="fix">Restart Ollama. Run <code>ollama ps</code> to see what is loaded, then try a smaller model or a Q4 quant. Close games/browsers that hold VRAM. On 8 GB, stay at 7B. See <a href="#e15">E15</a>.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e14" data-area="ollama">
+        <summary><span class="err-id">E14</span><span class="err-title">Ollama 500 / malformed JSON</span><span class="err-area">Ollama</span></summary>
+        <div class="err-body">
+          <code class="exact">Ollama error 500: … · Unexpected token in JSON · API error 500</code>
+          <dl>
+            <dt>Cause</dt><dd>A half-updated Ollama, a corrupted model blob, or a proxy returning an HTML error page instead of JSON.</dd>
+            <dt>Fix</dt><dd class="fix">Restart Ollama, update it, and retry a known-good model. Check the Ollama server log. If you use a proxy, confirm it passes JSON unchanged. Re-pull the model if only one model fails.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e15" data-area="models">
+        <summary><span class="err-id">E15</span><span class="err-title">Very slow generation / fans at maximum</span><span class="err-area">Models</span></summary>
+        <div class="err-body">
+          <code class="exact">(no error — tokens crawl, GPU or CPU pinned)</code>
+          <dl>
+            <dt>Cause</dt><dd>The model is spilling from VRAM to RAM/CPU, the context is huge, or another GPU-heavy app is competing.</dd>
+            <dt>Fix</dt><dd class="fix">Use a 7B Q4, close other GPU apps, lower effort/context, and check <code>ollama ps</code> for CPU/GPU split. First load is always slower (weights are read from disk). If it still crawls, the machine is below the model’s comfortable size.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e16" data-area="models">
+        <summary><span class="err-id">E16</span><span class="err-title">The wrong model answers</span><span class="err-area">Models</span></summary>
+        <div class="err-body">
+          <code class="exact">(no error — a different model name than expected)</code>
+          <dl>
+            <dt>Cause</dt><dd>A per-chat model overrides Settings → Models; or the CLI was started with <code>--model</code> / switched with <code>/model</code>.</dd>
+            <dt>Fix</dt><dd class="fix">Open the composer’s model picker for <b>this chat</b> and select the intended model. Change Settings for the default of new chats. In the CLI, run <code>/model</code> with no argument to see the active one.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e17" data-area="agent">
+        <summary><span class="err-id">E17</span><span class="err-title">Agent mode needs a linked folder</span><span class="err-area">Agent</span></summary>
+        <div class="err-body">
+          <code class="exact">Agent mode (v2) needs a linked folder - use the folder button in the composer first.</code>
+          <dl>
+            <dt>Cause</dt><dd>There is no workspace root, so the tools have no legal path to read or write. This is a guardrail, not a bug.</dd>
+            <dt>Fix</dt><dd class="fix">Link the project folder in the composer. In the CLI, pass <code>--dir &lt;path&gt;</code> or use <code>/root &lt;dir&gt;</code>. Without a folder, CODEZY uses classic chat mode.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e18" data-area="agent edits">
+        <summary><span class="err-id">E18</span><span class="err-title">A path is outside the linked folders</span><span class="err-area">Workspace</span></summary>
+        <div class="err-body">
+          <code class="exact">path outside the linked folders: C:\Users\you\… · That path is outside the folders linked to this chat.</code>
+          <dl>
+            <dt>Cause</dt><dd>The model asked for an absolute path or traversed <code>..</code> outside the session roots. The guard rejects it before any I/O.</dd>
+            <dt>Fix</dt><dd class="fix">Use paths <b>relative</b> to the linked folder. If the work genuinely lives elsewhere, link the parent folder that contains both projects. Do not widen the root to your whole home directory. The preview enforces the same rule.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e19" data-area="edits">
+        <summary><span class="err-id">E19</span><span class="err-title">No edit card / edits were not applied</span><span class="err-area">Edits</span></summary>
+        <div class="err-body">
+          <code class="exact">(the reply contains code, but no “New edit” bar)</code>
+          <dl>
+            <dt>Cause</dt><dd>Plan mode, a suggestion-only answer, a missing <code>===FILE:</code> header, or a non-tool model that tried to call tools in prose.</dd>
+            <dt>Fix</dt><dd class="fix">Switch to <b>build</b> or <b>auto</b>. Ask: “Make the change now; output a ===FILE block with the exact SEARCH text.” Check the message contains all four markers. If the transcript is full of refusals, start a new chat.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e20" data-area="edits">
+        <summary><span class="err-id">E20</span><span class="err-title">Binary file refused</span><span class="err-area">Edits</span></summary>
+        <div class="err-body">
+          <code class="exact">That file is not UTF-8 text - refusing to overwrite it.</code>
+          <dl>
+            <dt>Cause</dt><dd>The target is an image, archive, executable, or a text file saved in UTF-16/another encoding. Writing text would corrupt it.</dd>
+            <dt>Fix</dt><dd class="fix">Edit binary assets in their native app. Convert the text file to UTF-8 first, then retry. An image attachment is for the model to <em>see</em>, not for overwriting.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e21" data-area="edits">
+        <summary><span class="err-id">E21</span><span class="err-title">Rename or delete refused</span><span class="err-area">Edits</span></summary>
+        <div class="err-body">
+          <code class="exact">Rename refused - outside the linked folders, the file is gone, or the name is taken · Delete refused - only files inside the linked folders can be removed</code>
+          <dl>
+            <dt>Cause</dt><dd>The source/target is outside the roots, the file disappeared, the new name already exists, or the operation targets a folder.</dd>
+            <dt>Fix</dt><dd class="fix">Refresh the cowork tree, confirm the file still exists, choose a unique name, and keep both paths inside the linked folder. Deletion is file-only by design; remove folders in Explorer.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e22" data-area="edits">
+        <summary><span class="err-id">E22</span><span class="err-title">Undo or backup is unavailable</span><span class="err-area">Edits</span></summary>
+        <div class="err-body">
+          <code class="exact">Nothing to undo · no backup for this file · history is empty</code>
+          <dl>
+            <dt>Cause</dt><dd>No edit was accepted in this chat, the backup was deleted, or the file was changed outside CODEZY after the apply.</dd>
+            <dt>Fix</dt><dd class="fix">Use <code>/history</code> for the session; backups live under <code>~/.codezy/backups/&lt;session&gt;</code>. Restore manually if needed. Do not clean that folder while a session is active. For external changes, use Git instead.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e23" data-area="agent">
+        <summary><span class="err-id">E23</span><span class="err-title">No approval dialog — the edit applied anyway</span><span class="err-area">Agent</span></summary>
+        <div class="err-body">
+          <code class="exact">(an edit lands without a prompt)</code>
+          <dl>
+            <dt>Cause</dt><dd>Mode is <b>auto</b>, the CLI was started with <code>--auto</code>, or <code>/auto on</code> is set in the agent REPL.</dd>
+            <dt>Fix</dt><dd class="fix">Switch the composer to <b>build</b> (Settings → Agent), or run the CLI without <code>--auto</code> / use <code>/auto off</code>. In the desktop app auto still writes a backup and enforces path confinement; in the CLI it does neither — use a branch, not your main checkout.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e24" data-area="agent">
+        <summary><span class="err-id">E24</span><span class="err-title">The agent loops or repeats the same tool call</span><span class="err-area">Agent</span></summary>
+        <div class="err-body">
+          <code class="exact">(repeated read_file / grep_search; no final answer)</code>
+          <dl>
+            <dt>Cause</dt><dd>A small model is confused by a broad task, the result was truncated, or the model keeps “verifying” instead of finishing. Deep effort plus a huge folder makes it worse.</dd>
+            <dt>Fix</dt><dd class="fix">3.1.5 skips a third consecutive identical read call and forces one tool-free answer turn. If it still loops, press Stop, narrow the request to one file or one outcome, lower effort, and use a stronger tool model. Run <code>/compact</code> in the CLI or start a new chat. A specific acceptance criterion ("change only the h1 in index.html") stops most loops.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e25" data-area="agent cli">
+        <summary><span class="err-id">E25</span><span class="err-title">run_command can’t find node, npm, or a tool</span><span class="err-area">Agent</span></summary>
+        <div class="err-body">
+          <code class="exact">'node' is not recognized … · spawn ENOENT · command not found</code>
+          <dl>
+            <dt>Cause</dt><dd>A GUI launch inherits a PATH that predates your Node install, or the command is not installed on this machine.</dd>
+            <dt>Fix</dt><dd class="fix">Install Node LTS, then <b>fully quit and reopen</b> CODEZY so it picks up PATH. Confirm with <code>where node</code> / <code>node -v</code>. In a pinch, use the absolute path to the executable. The CLI inherits the terminal’s PATH.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e26" data-area="agent">
+        <summary><span class="err-id">E26</span><span class="err-title">A background task is stuck</span><span class="err-area">Agent</span></summary>
+        <div class="err-body">
+          <code class="exact">(status running forever; no new output)</code>
+          <dl>
+            <dt>Cause</dt><dd>A dev server is waiting on a port, a watcher has nothing to do, or the shell spawned a child that outlived the tracked process.</dd>
+            <dt>Fix</dt><dd class="fix">Open the Background tasks panel and stop it; or call <code>task_status</code> with <code>{ "id": n, "kill": true }</code>. If the child survives, end it in Task Manager. Avoid long-lived watchers when you only need a one-shot build.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e27" data-area="mcp">
+        <summary><span class="err-id">E27</span><span class="err-title">An MCP server won’t connect</span><span class="err-area">MCP</span></summary>
+        <div class="err-body">
+          <code class="exact">server closed during initialize · spawn ENOENT · MCP server failed</code>
+          <dl>
+            <dt>Cause</dt><dd>The command is not on the app’s PATH, the args/path are wrong, the server needs credentials, or it is an HTTP server (not stdio).</dd>
+            <dt>Fix</dt><dd class="fix">Run the exact command in a terminal first. Use an absolute executable path, pass required env vars, and confirm the package starts. One broken server is isolated; its tools are simply absent. Restart after editing. See <a href="#settings">MCP servers</a>.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e28" data-area="web">
+        <summary><span class="err-id">E28</span><span class="err-title">Web search is blocked or degraded</span><span class="err-area">Web</span></summary>
+        <div class="err-body">
+          <code class="exact">DuckDuckGo answered with an anti-bot challenge (HTTP 202) · DuckDuckGo responded 429</code>
+          <dl>
+            <dt>Cause</dt><dd>The upstream search page served a challenge/rate limit, the network blocks it, or a proxy intercepts the request.</dd>
+            <dt>Fix</dt><dd class="fix">Retry after a pause; CODEZY falls back to DDG Instant and Wikipedia. Switch network/VPN if it persists, or paste a known URL and use agent <code>web_fetch</code>. The CLI’s <code>/search</code> uses the same core and is a quick diagnostic.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e29" data-area="preview">
+        <summary><span class="err-id">E29</span><span class="err-title">Preview is blank or shows 404</span><span class="err-area">Preview</span></summary>
+        <div class="err-body">
+          <code class="exact">(empty pane; “not found”; unstyled page)</code>
+          <dl>
+            <dt>Cause</dt><dd>No HTML file, the chat lost its folder, the page needs a dev server, or a CDN/API call is blocked by CSP/CORS.</dd>
+            <dt>Fix</dt><dd class="fix">Link the folder, add an <code>index.html</code> (or pick an HTML file), and preview a static page. A Vite/Next dev server must run separately; the preview serves files, not a runtime. Check relative asset paths and external API calls. See <a href="#chat">Live preview</a>.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e30" data-area="providers">
+        <summary><span class="err-id">E30</span><span class="err-title">Provider rejects the API key (401 / 403)</span><span class="err-area">Providers</span></summary>
+        <div class="err-body">
+          <code class="exact">API error 401: Unauthorized · 403 Forbidden · invalid api key</code>
+          <dl>
+            <dt>Cause</dt><dd>Wrong key, key not saved, the provider account lacks access, or the base URL points at a different service.</dd>
+            <dt>Fix</dt><dd class="fix">Settings → Models → Providers &amp; endpoint: re-enter the key, verify the base URL (often ends in <code>/v1</code>), save, and retry. Some keys need a project/org header or are region-scoped. Keys live in <code>settings.json</code> — never commit that file.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e31" data-area="providers">
+        <summary><span class="err-id">E31</span><span class="err-title">Provider 404 / unknown model or endpoint</span><span class="err-area">Providers</span></summary>
+        <div class="err-body">
+          <code class="exact">API error 404: model not found · 404 page not found</code>
+          <dl>
+            <dt>Cause</dt><dd>The model id is not offered by that provider, or the base URL is missing/duplicating a path segment.</dd>
+            <dt>Fix</dt><dd class="fix">Copy the exact id from the provider’s model list. Check the base URL against its docs (for example <code>https://api.openai.com/v1</code>). Save, reopen the model picker, and pick the model again. For local Ollama, pull the model first.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e32" data-area="providers">
+        <summary><span class="err-id">E32</span><span class="err-title">Rate limit or request timeout</span><span class="err-area">Providers</span></summary>
+        <div class="err-body">
+          <code class="exact">API error 429: rate limit exceeded · ETIMEDOUT · the model took too long</code>
+          <dl>
+            <dt>Cause</dt><dd>Provider quota, a long prompt, a cold model, or a network path that stalls.</dd>
+            <dt>Fix</dt><dd class="fix">Wait and retry with a shorter chat; reduce attached files/effort. On a local model, the first load after idle is slower. If the provider is rate-limiting, switch provider or model. A hung call is capped by the harness rather than spinning forever.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e33" data-area="providers web">
+        <summary><span class="err-id">E33</span><span class="err-title">SSL / certificate error on a corporate network</span><span class="err-area">Providers</span></summary>
+        <div class="err-body">
+          <code class="exact">self signed certificate in certificate chain · UNABLE_TO_VERIFY_LEAF_SIGNATURE</code>
+          <dl>
+            <dt>Cause</dt><dd>A corporate proxy replaces TLS certificates, and the app does not trust its root CA.</dd>
+            <dt>Fix</dt><dd class="fix">Install the organisation’s root CA in the OS trust store, or point <code>NODE_EXTRA_CA_CERTS</code> at the PEM before launching. Do not disable TLS verification. Local Ollama is unaffected.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e34" data-area="launch">
+        <summary><span class="err-id">E34</span><span class="err-title">The disk is full (ENOSPC)</span><span class="err-area">Launch</span></summary>
+        <div class="err-body">
+          <code class="exact">ENOSPC: no space left on device · There is not enough space on the disk</code>
+          <dl>
+            <dt>Cause</dt><dd>Model blobs, backups, Electron caches, or ordinary Windows temp files filled the drive.</dd>
+            <dt>Fix</dt><dd class="fix">Free space, then retry. Remove models you do not use with <code>ollama rm &lt;model&gt;</code> (re-pullable), clear <code>%TEMP%</code>, and prune old backups only if you accept losing undo history. Never delete <code>~/.codezy</code> wholesale.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e35" data-area="cli">
+        <summary><span class="err-id">E35</span><span class="err-title">“Open terminal interface” does nothing</span><span class="err-area">CLI</span></summary>
+        <div class="err-body">
+          <code class="exact">(terminal flashes and closes, or no window)</code>
+          <dl>
+            <dt>Cause</dt><dd>Node is not on PATH for the spawned terminal, Windows Terminal is missing, or the chat has no linked folder for a working directory.</dd>
+            <dt>Fix</dt><dd class="fix">Install Node LTS and reopen CODEZY. Link a folder to the chat. Try the bundled CLI directly: <code>node &lt;install&gt;\resources\cli\codezy.mjs</code>. A global <code>codezy</code> must be current; an old global install can point at stale code.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e36" data-area="install">
+        <summary><span class="err-id">E36</span><span class="err-title">Update check or download fails</span><span class="err-area">Install</span></summary>
+        <div class="err-body">
+          <code class="exact">update check failed · download interrupted · GitHub 403</code>
+          <dl>
+            <dt>Cause</dt><dd>Offline, GitHub rate limiting, antivirus locking the exe, or no write permission to the install folder.</dd>
+            <dt>Fix</dt><dd class="fix">Download <code>CODEZY-Setup-3.1.6.exe</code> manually and run it over the existing install; data survives. If GitHub is blocked, use a mirror. Do not run the app elevated just to update; install per-user.</dd>
+          </dl>
+        </div>
+      </details>
+
+      <details class="err-card" id="e37" data-area="workspace edits">
+        <summary><span class="err-id">E37</span><span class="err-title">Git status is empty or unavailable</span><span class="err-area">Workspace</span></summary>
+        <div class="err-body">
+          <code class="exact">git: command not found · no repository found</code>
+          <dl>
+            <dt>Cause</dt><dd>Git is not installed/on PATH, the linked folder is not a repository, or the repo has no commits yet.</dd>
+            <dt>Fix</dt><dd class="fix">Install Git, reopen CODEZY, and confirm <code>git --version</code>. Run <code>git init</code> (or open the repository root) for status. Git features are additive; edits and preview work without it.</dd>
+          </dl>
+        </div>
+      </details>
+
+    </div>
+
+    <div class="err-none" id="errNone" hidden>
+      No error matches that filter. Try a shorter phrase, clear the search, or read the <a href="#start">start guide</a>.
+    </div>
+
+    <p class="small muted" style="margin-top:14px">Reporting a new one: open the toast’s <b>Technical details</b>, copy the text, and include the CODEZY version, model id, exact prompt and the tail of <code>~/.codezy/logs/main.log</code>.</p>
+  </section>
+
+  <!-- 07 ----------------------------------------------------------------->
+  <section class="doc-section" id="faq">
+    <div class="section-head">
+      <span class="section-num">07</span>
+      <div>
+        <h2>Short FAQ</h2>
+        <p class="sub">The questions that come up before and after the first successful edit.</p>
+      </div>
+    </div>
+
+    <div class="faq">
+      <details>
+        <summary>Does CODEZY send my code to the cloud?</summary>
+        <div><p>Not by default. Inference goes to Ollama on <code>127.0.0.1</code>, and sessions live in <code>~/.codezy</code>. A cloud provider receives the prompt only when you select one. Web search sends the query; there is no telemetry endpoint.</p></div>
+      </details>
+      <details>
+        <summary>Do I need an API key?</summary>
+        <div><p>No for local Ollama. Cloud providers need their own key in Settings → Models. MCP servers may need credentials in their environment. Never commit <code>settings.json</code> or paste a key into a chat.</p></div>
+      </details>
+      <details>
+        <summary>Why is a 13B model worse at agent mode than a 7B?</summary>
+        <div><p>Agent mode needs tool calling, not raw size. <code>codellama:13b</code> advertises completion only; <code>qwen2.5-coder:7b</code> advertises tools. A trained 7B will beat a completion-only 13B at reading, calling and writing files.</p></div>
+      </details>
+      <details>
+        <summary>Why does it keep suggesting changes instead of making them?</summary>
+        <div><p>Usually plan mode, no linked folder, a non-tool model, or a transcript full of earlier refusals. See <a href="#e10">E10</a>. Be explicit, start a fresh chat, and use a tool-capable model.</p></div>
+      </details>
+      <details>
+        <summary>How can I tell agent mode is actually on?</summary>
+        <div><p>Look for a folder chip and a <span class="pill tools">tools</span> badge. Ask it to list files: a working agent calls <code>list_dir</code>; a classic model can only describe the injected tree. Settings → Agent must show agent mode on, and the chat must have a folder.</p></div>
+      </details>
+      <details>
+        <summary>Does it work offline?</summary>
+        <div><p>Local chat, file tools, preview and the CLI work offline if Ollama and the model are local. Web search, cloud providers, GitHub update checks and <code>npx</code> MCP servers need a network.</p></div>
+      </details>
+      <details>
+        <summary>Can it edit outside the folder I linked?</summary>
+        <div><p>No. Every tool and the preview resolve paths inside the session roots and reject traversal. If a project needs two trees, link a common parent. Widening the root to your home directory would give the model access to everything.</p></div>
+      </details>
+      <details>
+        <summary>How do I update without losing data?</summary>
+        <div><p>Run the newer installer over the old one. Program files are replaced; <code>~/.codezy</code> stays. Back up that folder first if the update is a major version.</p></div>
+      </details>
+    </div>
+  </section>
+
+  <!-- 08 ----------------------------------------------------------------->
+  <section class="doc-section" id="changelog">
+    <div class="section-head">
+      <span class="section-num">08</span>
+      <div>
+        <h2>What changed in 3.1.6</h2>
+        <p class="sub">A terminal-shaped release: the CLI got a real home page, and the spinner became part of the story instead of a footnote.</p>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card"><span class="kicker">CLI</span><h3>A home page for the terminal</h3><p>The <a href="https://github.com/jaunchun/codezy-cli#readme">CLI README</a> is now a package page: a three-command quickstart, a terminal still, a chat-vs-agent table, the spinner explained, every command and flag, approvals, CI and privacy. It reads like the front door, not an appendix.</p></div>
+      <div class="card"><span class="kicker">Spinner</span><h3>nanospinner, on purpose</h3><p>The agent REPL's <code>nanospinner</code> line names the live phase (<code>thinking</code>, <code>read file …</code>, <code>run command …</code>), shows elapsed seconds after two, drops frames while you type or approve, and writes to stderr. The loop is driven directly so Ctrl+C still interrupts a turn.</p></div>
+      <div class="card"><span class="kicker">Surface</span><h3>The banner names the build</h3><p>The agent REPL header now reads <code>CODEZY v2 · 3.1.6</code>, and <code>codezy --agent --preview</code> includes a sample phase line. The design sheet shows the spinner, not just the boxes around it.</p></div>
+      <div class="card"><span class="kicker">Identity</span><h3>3.1.6 everywhere</h3><p>Root and CLI manifests, both lockfiles, the installer filename, this manual's title, footer and changelog all report 3.1.6. 3.1.4 stays skipped; 3.1.5 becomes the previous release.</p></div>
+      <div class="card"><span class="kicker">Previous release</span><h3>3.1.5 is still underneath</h3><p>Capability-aware agent mode, the setup card and turn pin, readable error toasts, six-category Settings, the three-column field manual and the command-specific help pages are unchanged. Full 3.1.5 notes remain in the repository README.</p></div>
+      <div class="card"><span class="kicker">Scope</span><h3>Surface, not harness</h3><p>Prompts, tools, approvals and model routing are untouched. This release is about making the terminal easier to discover, easier to read and honest about the one dependency it uses.</p></div>
+    </div>
+
+    <h3 id="upgrade-checklist">Upgrade checklist</h3>
+    <ul>
+      <li>Quit every CODEZY window before installing.</li>
+      <li>Run <code>CODEZY-Setup-3.1.6.exe</code>; <code>~/.codezy</code> and your chats survive.</li>
+      <li>Run <code>codezy --version</code>; it should print <code>codezy 3.1.6</code>. If it shows an older version, see <a href="#e35">E35</a>.</li>
+      <li>Open <code>codezy --agent</code>: the header should read <code>CODEZY v2 · 3.1.6</code>. <code>--preview</code> shows the chrome and a spinner sample without loading a model.</li>
+      <li>Start a new chat for important work. Old refusals keep poisoning small models.</li>
+      <li>Link the project folder, run the five-minute smoke test, and set the web chip to <em>auto</em> if you expect current facts.</li>
+      <li>Keep <code>~/.codezy</code>. The installer does not touch it; back it up before a major upgrade anyway.</li>
+    </ul>
+
+    <p class="small muted">The desktop app, CLI package and installer all report 3.1.6. 3.1.4 was skipped; 3.1.5 is the previous release. Historical release notes for 3.0.0–3.1.5 stay in the repository README; this page documents the current build. If <code>codezy --version</code> shows something older, a global npm install is shadowing the bundled CLI — see <a href="#e35">E35</a>.</p>
+  </section>
+
+  <footer class="footer">
+    <span><b>CODEZY field manual</b> · v3.1.6 · October 2026</span>
+    <span>Monochrome by design · no external requests</span>
+    <a href="#errors">37 known errors</a>
+    <a href="#models">Model guide</a>
+    <a class="to-top" href="#top">Back to top ↑</a>
+  </footer>
+    </div>
+
+    <aside class="docs-toc" aria-label="On this page">
+      <p class="toc-title">On this page</p>
+
+      <div class="toc-group active" data-group="start">
+        <a class="toc-top" href="#start">Start here</a>
+        <a class="sub" href="#install-windows">Windows installer</a>
+        <a class="sub" href="#install-cli">CLI and development</a>
+        <a class="sub" href="#four-steps">Four steps</a>
+        <a class="sub" href="#smoke-test">Five-minute smoke test</a>
+        <a class="sub" href="#first-send">What the first send does</a>
+      </div>
+
+      <div class="toc-group" data-group="models">
+        <a class="toc-top" href="#models">Models that work</a>
+        <a class="sub" href="#probe">Check a model yourself</a>
+        <a class="sub" href="#by-machine">Choosing by machine</a>
+      </div>
+
+      <div class="toc-group" data-group="chat">
+        <a class="toc-top" href="#chat">Chat and files</a>
+        <a class="sub" href="#link-folder">Linking a folder</a>
+        <a class="sub" href="#edit-blocks">The edit-block language</a>
+        <a class="sub" href="#agent-tools">The 13 agent tools</a>
+        <a class="sub" href="#web-search">Web search</a>
+        <a class="sub" href="#preview">Live preview</a>
+      </div>
+
+      <div class="toc-group" data-group="cli">
+        <a class="toc-top" href="#cli">Terminal</a>
+        <a class="sub" href="#repl">The agent REPL</a>
+      </div>
+
+      <div class="toc-group" data-group="settings">
+        <a class="toc-top" href="#settings">Settings and data</a>
+        <a class="sub" href="#mcp">MCP servers</a>
+        <a class="sub" href="#paths">Where everything lives</a>
+        <a class="sub" href="#shortcuts">Shortcuts</a>
+      </div>
+
+      <div class="toc-group" data-group="errors">
+        <a class="toc-top" href="#errors">Known errors</a>
+        <p class="toc-note">37 entries, collapsed. Search by symptom or exact engine text.</p>
+      </div>
+
+      <div class="toc-group" data-group="faq">
+        <a class="toc-top" href="#faq">Short FAQ</a>
+        <p class="toc-note">Privacy, API keys, tool models and updates.</p>
+      </div>
+
+      <div class="toc-group" data-group="changelog">
+        <a class="toc-top" href="#changelog">What changed</a>
+        <a class="sub" href="#upgrade-checklist">Upgrade checklist</a>
+      </div>
+
+      <a class="toc-back" href="#top">Back to top</a>
+    </aside>
+  </div>
+</main>
+
+<script>
+  (function () {
+    'use strict';
+
+    var input = document.getElementById('errSearch');
+    var grid = document.getElementById('errGrid');
+    var cards = Array.prototype.slice.call(grid.querySelectorAll('.err-card'));
+    var chips = Array.prototype.slice.call(document.querySelectorAll('.chip[data-area]'));
+    var count = document.getElementById('errCount');
+    var none = document.getElementById('errNone');
+    var activeArea = 'all';
+    var total = cards.length;
+
+    function applyFilter() {
+      var q = (input.value || '').trim().toLowerCase();
+      var terms = q ? q.split(/\s+/) : [];
+      var shown = 0;
+
+      cards.forEach(function (card) {
+        var areas = (card.getAttribute('data-area') || '').split(/\s+/);
+        var areaOk = activeArea === 'all' || areas.indexOf(activeArea) !== -1;
+        var hay = card.textContent.toLowerCase();
+        var queryOk = terms.every(function (t) { return hay.indexOf(t) !== -1; });
+        var show = areaOk && queryOk;
+        card.hidden = !show;
+        card.open = !!q && show;
+        if (show) shown++;
+      });
+
+      count.textContent = shown + ' / ' + total + ' errors';
+      none.hidden = shown !== 0;
+    }
+
+    input.addEventListener('input', applyFilter);
+
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') {
+        input.value = '';
+        applyFilter();
+        input.blur();
+      }
+    });
+
+    chips.forEach(function (chip) {
+      chip.addEventListener('click', function () {
+        activeArea = chip.getAttribute('data-area');
+        chips.forEach(function (c) {
+          c.setAttribute('aria-pressed', c === chip ? 'true' : 'false');
+        });
+        applyFilter();
+      });
+    });
+
+    // -- global search: sections, subheads and the error catalogue -----------
+    var searchWrap = document.getElementById('docSearchWrap');
+    var searchInput = document.getElementById('docSearchInput');
+    var results = document.getElementById('docResults');
+    var manualSections = Array.prototype.slice.call(document.querySelectorAll('section.doc-section'));
+    var navLinks = Array.prototype.slice.call(document.querySelectorAll('.nav a'));
+    var tocGroups = Array.prototype.slice.call(document.querySelectorAll('.toc-group'));
+    var activeSection = 'start';
+    var searchIndex = [];
+    var resultNodes = [];
+    var resultAt = -1;
+
+    function cleanText(value) {
+      return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function blockText(heading) {
+      var parts = [cleanText(heading.textContent)];
+      var node = heading.nextElementSibling;
+      var step = 0;
+      while (node && node.tagName !== 'H3' && step < 8) {
+        parts.push(cleanText(node.textContent));
+        node = node.nextElementSibling;
+        step++;
+      }
+      return parts.join(' ');
+    }
+
+    manualSections.forEach(function (section) {
+      var numberEl = section.querySelector('.section-num');
+      var titleEl = section.querySelector('h2');
+      var number = cleanText(numberEl ? numberEl.textContent : '');
+      var title = cleanText(titleEl ? titleEl.textContent : section.id);
+      var body = cleanText(section.textContent);
+      searchIndex.push({
+        kind: 'section', badge: number, label: title,
+        sub: (number ? number + ' · ' : '') + 'section',
+        target: section, titleLower: title.toLowerCase(),
+        hay: (title + ' ' + body).toLowerCase(), text: body
+      });
+      Array.prototype.forEach.call(section.querySelectorAll('h3[id]'), function (heading) {
+        var label = cleanText(heading.textContent);
+        var text = blockText(heading);
+        searchIndex.push({
+          kind: 'head', badge: number, label: label,
+          sub: (number ? number + ' · ' : '') + title,
+          target: heading, titleLower: label.toLowerCase(),
+          hay: text.toLowerCase(), text: text
+        });
+      });
+    });
+
+    cards.forEach(function (card) {
+      var titleEl = card.querySelector('.err-title');
+      var areaEl = card.querySelector('.err-area');
+      var label = cleanText(titleEl ? titleEl.textContent : card.id);
+      var area = cleanText(areaEl ? areaEl.textContent : '');
+      var text = cleanText(card.textContent);
+      searchIndex.push({
+        kind: 'error', badge: card.id.toUpperCase(), label: label,
+        sub: card.id.toUpperCase() + (area ? ' · ' + area : '') + ' · cause and fix',
+        target: card, titleLower: label.toLowerCase(),
+        hay: (label + ' ' + text).toLowerCase(), text: text
+      });
+    });
+
+    function scoreResult(item, query) {
+      var title = item.titleLower;
+      if (title === query) return 0;
+      if (title.indexOf(query) === 0) return 1;
+      if (title.indexOf(query) !== -1) return 2;
+      if (item.kind === 'error') return 3;
+      if (item.kind === 'head') return 4;
+      return 5;
+    }
+
+    function findResults(query) {
+      var terms = query.split(/\s+/);
+      return searchIndex
+        .filter(function (item) {
+          return terms.every(function (term) { return item.hay.indexOf(term) !== -1; });
+        })
+        .map(function (item) { return { item: item, score: scoreResult(item, query) }; })
+        .sort(function (a, b) { return a.score - b.score; })
+        .slice(0, 9)
+        .map(function (entry) { return entry.item; });
+    }
+
+    function snippetFor(item, query) {
+      var text = item.text || '';
+      var at = text.toLowerCase().indexOf(query);
+      if (at < 0) at = text.toLowerCase().indexOf(query.split(/\s+/)[0]);
+      if (at < 0) return item.sub;
+      var start = Math.max(0, at - 28);
+      var end = Math.min(text.length, at + query.length + 74);
+      return (start ? '… ' : '') + text.slice(start, end).trim() + (end < text.length ? ' …' : '');
+    }
+
+    function closeResults() {
+      results.hidden = true;
+      searchInput.setAttribute('aria-expanded', 'false');
+      resultNodes = [];
+      resultAt = -1;
+    }
+
+    function openResults() {
+      var query = cleanText(searchInput.value).toLowerCase();
+      results.textContent = '';
+      resultNodes = [];
+      resultAt = -1;
+      if (!query) {
+        closeResults();
+        return;
+      }
+      var hits = findResults(query);
+      searchInput.setAttribute('aria-expanded', 'true');
+      results.hidden = false;
+      results.scrollTop = 0;
+      if (!hits.length) {
+        var empty = document.createElement('p');
+        empty.className = 'doc-empty';
+        empty.textContent = 'No section or error matches “' + query + '”. Try a shorter word, or browse the 37 known errors.';
+        results.appendChild(empty);
+        return;
+      }
+      hits.forEach(function (hit) {
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'doc-hit';
+        var badge = document.createElement('span');
+        badge.className = 'doc-hit-kind';
+        badge.textContent = hit.badge;
+        var main = document.createElement('span');
+        var label = document.createElement('span');
+        label.className = 'doc-hit-label';
+        label.textContent = hit.label;
+        var sub = document.createElement('span');
+        sub.className = 'doc-hit-sub';
+        sub.textContent = snippetFor(hit, query);
+        main.appendChild(label);
+        main.appendChild(sub);
+        button.appendChild(badge);
+        button.appendChild(main);
+        button.addEventListener('click', function () { goToResult(hit); });
+        results.appendChild(button);
+        resultNodes.push(button);
+      });
+    }
+
+    function sectionOf(element) {
+      var node = element;
+      while (node && node !== document.body) {
+        if (node.className && String(node.className).indexOf('doc-section') !== -1) return node;
+        node = node.parentElement;
+      }
+      return null;
+    }
+
+    function scrollToElement(element) {
+      if (element && typeof element.scrollIntoView === 'function') {
+        element.scrollIntoView({ block: 'start' });
+      }
+    }
+
+    function goToResult(hit) {
+      closeResults();
+      searchInput.value = '';
+      if (hit.kind === 'error') {
+        input.value = '';
+        activeArea = 'all';
+        chips.forEach(function (chip) {
+          chip.setAttribute('aria-pressed', chip.getAttribute('data-area') === 'all' ? 'true' : 'false');
+        });
+        applyFilter();
+        hit.target.open = true;
+      }
+      try {
+        if (hit.target.id) history.replaceState(null, '', '#' + hit.target.id);
+      } catch (error) {
+        /* file:// in some browsers refuses history writes; scrolling still works */
+      }
+      scrollToElement(hit.target);
+      var section = sectionOf(hit.target);
+      if (section) setActiveSection(section.id);
+    }
+
+    function highlightResult(step) {
+      if (!resultNodes.length) return;
+      resultAt = (resultAt + step + resultNodes.length) % resultNodes.length;
+      resultNodes.forEach(function (node, index) {
+        node.classList.toggle('on', index === resultAt);
+      });
+      var node = resultNodes[resultAt];
+      if (node && typeof node.scrollIntoView === 'function') node.scrollIntoView({ block: 'nearest' });
+    }
+
+    searchInput.addEventListener('input', openResults);
+    searchInput.addEventListener('focus', function () {
+      if (cleanText(searchInput.value)) openResults();
+    });
+    searchInput.addEventListener('keydown', function (event) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        highlightResult(1);
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        highlightResult(-1);
+      } else if (event.key === 'Enter') {
+        event.preventDefault();
+        if (resultAt >= 0 && resultNodes[resultAt]) {
+          resultNodes[resultAt].click();
+        } else if (resultNodes.length) {
+          resultNodes[0].click();
+        }
+      } else if (event.key === 'Escape') {
+        searchInput.value = '';
+        closeResults();
+        searchInput.blur();
+      }
+    });
+
+    document.addEventListener('click', function (event) {
+      if (!searchWrap.contains(event.target)) closeResults();
+    });
+
+    // -- scrollspy: the sidebar and “On this page” follow the visible section
+    function setActiveSection(id) {
+      if (id && id !== activeSection) activeSection = id;
+      navLinks.forEach(function (link) {
+        var on = link.getAttribute('href') === '#' + activeSection;
+        link.classList.toggle('active', on);
+        if (on) link.setAttribute('aria-current', 'true');
+        else link.removeAttribute('aria-current');
+      });
+      tocGroups.forEach(function (group) {
+        group.classList.toggle('active', group.getAttribute('data-group') === activeSection);
+      });
+    }
+
+    function spy() {
+      var offset = window.pageYOffset || document.documentElement.scrollTop || 0;
+      if (offset < 40) {
+        setActiveSection('start');
+        return;
+      }
+      var current = manualSections[0];
+      manualSections.forEach(function (section) {
+        if (section.getBoundingClientRect().top <= 88) current = section;
+      });
+      if (offset + window.innerHeight >= document.documentElement.scrollHeight - 8) {
+        current = manualSections[manualSections.length - 1];
+      }
+      setActiveSection(current.id);
+    }
+
+    var spyTimer = 0;
+    window.addEventListener('scroll', function () {
+      if (spyTimer) return;
+      spyTimer = window.setTimeout(function () {
+        spyTimer = 0;
+        spy();
+      }, 70);
+    }, { passive: true });
+    window.addEventListener('hashchange', function () {
+      var target = document.getElementById((location.hash || '').replace('#', ''));
+      var section = target && sectionOf(target);
+      if (section) setActiveSection(section.id);
+    });
+
+    if (location.hash) {
+      var startTarget = document.getElementById(location.hash.replace('#', ''));
+      var startSection = startTarget && sectionOf(startTarget);
+      if (startSection) setActiveSection(startSection.id);
+    }
+
+    document.addEventListener('keydown', function (e) {
+      var tag = (e.target && e.target.tagName) || '';
+      var typing = tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable);
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        searchInput.focus();
+        searchInput.select();
+        return;
+      }
+      if (e.key === '/' && !typing && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        var target = activeSection === 'errors' ? input : searchInput;
+        target.focus();
+        target.select();
+      }
+    });
+
+    applyFilter();
+  })();
+</script>
+</body>
+</html>

@@ -4,8 +4,9 @@
 // turns into real work (build prompt → stream from Ollama → save to disk).
 // ---------------------------------------------------------------------------
 
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, protocol, screen, shell } from 'electron'
 import path from 'path'
+import os from 'os'
 import { randomUUID } from 'crypto'
 import fs from 'fs'
 import { spawn } from 'child_process'
@@ -16,6 +17,7 @@ import {
   deleteSession,
   driveStatus,
   getSettings,
+  getDataDir,
   getSession,
   initStore,
   listProjects,
@@ -28,9 +30,9 @@ import {
   searchSessions,
   writeMemory
 } from './store'
-import { listOllamaModelDetails, listOpenAIModels, pingOllama, streamChat, contextSizeFor } from './ollama'
+import { listOllamaModelDetails, listOpenAIModels, pingOllama, streamChat, contextSizeFor, modelCapabilities, modelSupportsTools } from './ollama'
 import { buildMessages, fileTree } from './prompt'
-import { webSearch } from './search'
+import { webSearch, buildWebContext, looksLikeWebQuery } from './search'
 import { gitDiff, gitStatus } from './git'
 import { learnFromExchange } from './learn'
 import { applyCodeBlock, applyEdits, listBackups, restoreBackup, undoLast } from './edits'
@@ -45,17 +47,76 @@ import {
   ideWrite,
   isImagePath,
   listFiles,
-  readFileIn
+  readFileIn,
+  searchFiles
 } from './files'
 import { listV2Tasks, runV2, stopV2Task, v2Active } from './v2'
 import { collectUsage } from './usage'
 import { applyUpdate, checkForUpdates, downloadUpdate, UPDATE_REPO } from './update'
+import { terminalPlan } from './terminal'
+import { readWindowState, sanitizeWindowState, writeWindowState } from './windowstate'
+import { logLine, rotateIfNeeded } from './log'
+import { syncTray, trayBalloon } from './tray'
+import { findDeepLink, PROTOCOL, sessionIdFromLink } from './deeplink'
+import {
+  PREVIEW_SCHEME,
+  defaultPreviewPath,
+  listPreviewFiles,
+  mimeFor,
+  registerPreviewScheme,
+  resolvePreviewPath
+} from './preview'
 import { McpConnection, mcpDisconnectAll, mcpDropSession, mcpGetSession } from './mcp'
 import type { UpdateCheck } from '../shared/api'
 import type { FileEdit } from '../shared/edits'
 
 let win: BrowserWindow | null = null
 const aborts = new Map<string, AbortController>()
+
+// the live site preview — the custom scheme must be declared BEFORE the app
+// is ready (Electron requires it), so it happens right here, at import time
+registerPreviewScheme()
+
+// one watcher per session whose preview is open: a change in the linked
+// folder means the site changed, so the preview reloads
+const previewWatchers = new Map<string, { watcher: fs.FSWatcher; timer: NodeJS.Timeout | null }>()
+
+function watchPreview(sessionId: string): void {
+  if (previewWatchers.has(sessionId)) return
+  const session = getSession(sessionId)
+  const root = (session?.linkedFolders ?? [])[0]
+  if (!root) return
+  let watcher: fs.FSWatcher | null = null
+  try {
+    watcher = fs.watch(root, { recursive: true }, (_e, filename) => {
+      const name = String(filename ?? '')
+      // editors write temp files and swap them in — those are noise
+      if (/(^|[\\/])\..+~$|\.tmp$|\.swp$|\.lock$/i.test(name)) return
+      const entry = previewWatchers.get(sessionId)
+      if (!entry) return
+      if (entry.timer) clearTimeout(entry.timer)
+      entry.timer = setTimeout(() => {
+        entry.timer = null
+        emit(sessionId, { type: 'previewreload' })
+      }, 250)
+    })
+  } catch {
+    return // a folder that cannot be watched (permissions) just means no live reload
+  }
+  previewWatchers.set(sessionId, { watcher, timer: null })
+}
+
+function unwatchPreview(sessionId: string): void {
+  const entry = previewWatchers.get(sessionId)
+  if (!entry) return
+  if (entry.timer) clearTimeout(entry.timer)
+  try {
+    entry.watcher.close()
+  } catch {
+    /* ignore */
+  }
+  previewWatchers.delete(sessionId)
+}
 // pending v2 approval dialogs: key = `${sessionId}:${askId}` — main blocks on
 // this promise until the renderer's Approve/Deny modal answers.
 const v2Asks = new Map<string, { id: number; resolve: (ok: boolean) => void }>()
@@ -113,11 +174,100 @@ function createWindow(bounds?: Electron.Rectangle): void {
       nodeIntegration: false
     }
   })
+  win.setAlwaysOnTop(settings.alwaysOnTop === true) // coding alongside a chat
+  win.webContents.zoomLevel = Number(settings.zoomLevel) || 0 // remembered zoom
 
-  if (bounds) win.setBounds(bounds)
+  let restoreMaximized = false
+  if (bounds) {
+    win.setBounds(bounds)
+  } else {
+    // launch: the last place you left the window — sanitized against the
+    // displays that exist NOW (an unplugged-monitor save must never open
+    // off-screen with no way to drag it back)
+    const saved = sanitizeWindowState(
+      readWindowState(getDataDir()),
+      screen.getAllDisplays().map((d) => d.workArea),
+      { width: 940, height: 600 },
+      { width: 1320, height: 840 }
+    )
+    if (saved) {
+      win.setBounds({ x: saved.x, y: saved.y, width: saved.width, height: saved.height })
+      restoreMaximized = saved.maximized
+    }
+  }
+
+  // Closing writes the geometry back: NORMAL bounds + the maximized flag.
+  // Captured per window (`self`): the acrylic theme rebuild reassigns the
+  // module `win` BEFORE the old window closes.
+  const self = win
+  self.on('close', (e) => {
+    // Tray mode: the ✕ hides instead of quitting — the app stays reachable
+    // from the tray icon / menu. A real quit (tray → Quit, ⌘Q, SIGTERM)
+    // sets `quitting` first, so it still goes through.
+    if (!quitting && getSettings().minimizeToTray === true && !self.isDestroyed()) {
+      e.preventDefault()
+      self.hide()
+      // one hint per launch: "where did my app go?" should never happen
+      if (!trayHintShown) {
+        trayHintShown = true
+        trayBalloon('CODEZY is still running', 'It lives in the tray now — click the icon to come back, right-click to quit.')
+      }
+      return
+    }
+    try {
+      const b = self.getNormalBounds()
+      writeWindowState(getDataDir(), {
+        x: b.x,
+        y: b.y,
+        width: b.width,
+        height: b.height,
+        maximized: self.isMaximized()
+      })
+    } catch {
+      // geometry must never block quitting
+    }
+  })
+
+  // QoL zoom shortcuts: Ctrl/Cmd + '+', '-', '0' scale the whole UI without
+  // needing a menu entry. Handled here (not via menu accelerators) so they
+  // work in dev and packaged builds alike, and never shadow the renderer's
+  // own single-key bindings.
+  win.webContents.on('before-input-event', (e, input) => {
+    if (input.type !== 'keyDown') return
+    const mod = process.platform === 'darwin' ? input.meta : input.control
+    if (!mod) return
+    const wc = win?.webContents
+    if (!wc) return
+    const k = input.key.toLowerCase()
+    if (k === '=' || k === '+') {
+      wc.zoomLevel += 0.5
+      e.preventDefault()
+    } else if (k === '-') {
+      wc.zoomLevel = Math.max(-3, wc.zoomLevel - 0.5)
+      e.preventDefault()
+    } else if (k === '0') {
+      wc.zoomLevel = 0
+      e.preventDefault()
+    } else {
+      return
+    }
+    // remember it across launches (throttled — key repeat fires fast)
+    const level = wc.zoomLevel
+    if (zoomSaveTimer) clearTimeout(zoomSaveTimer)
+    zoomSaveTimer = setTimeout(() => {
+      zoomSaveTimer = null
+      patchSettings({ zoomLevel: level })
+    }, 600)
+  })
 
   win.once('ready-to-show', () => {
-    win?.show()
+    // startHidden (Settings → behavior): the login-item launch stays in the
+    // tray instead of flashing a window. First window only — an explicit
+    // reopen (tray, second instance, macOS dock) always shows.
+    const s = getSettings()
+    const stayHidden = firstWindow && s.startHidden === true && s.minimizeToTray === true
+    firstWindow = false
+    if (!stayHidden) win?.show()
     if (acrylic) {
       // Electron/Chromium quirk: the DWM acrylic material sometimes only
       // engages after the material is re-set and the window is nudged by a
@@ -132,6 +282,9 @@ function createWindow(bounds?: Electron.Rectangle): void {
         win.setSize(w, h)
       }, 120)
     }
+    // AFTER the acrylic nudge (it resizes — a setSize on a maximized window
+    // would drop it back to normal)
+    if (restoreMaximized) setTimeout(() => win?.maximize(), 200)
   })
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -146,6 +299,19 @@ function createWindow(bounds?: Electron.Rectangle): void {
     if (url.startsWith('http://') || url.startsWith('https://')) void shell.openExternal(url)
     return { action: 'deny' }
   })
+
+  // resilience: a renderer crash reloads instead of leaving a dead window
+  // (capped at 3 — a crash loop must not spin forever); hangs are logged so
+  // the log file explains a stuck session.
+  win.webContents.on('render-process-gone', (_e, details) => {
+    logLine(DATA_DIR, `render-process-gone: ${details.reason} (exit ${details.exitCode})`)
+    if (details.reason !== 'clean-exit' && renderReloads < 3 && win) {
+      renderReloads++
+      win.webContents.reload()
+    }
+  })
+  win.on('unresponsive', () => logLine(DATA_DIR, 'window unresponsive'))
+  win.on('responsive', () => logLine(DATA_DIR, 'window responsive again'))
 
   // Lock the renderer to this app: a navigation anywhere else would load an
   // external page WITH the preload bridge (window.codezy) still attached —
@@ -188,6 +354,10 @@ function emit(
     | { type: 'error'; message: string }
     | { type: 'aborted' }
     | { type: 'v2tool'; iteration: number; name: string; args: Record<string, unknown>; outcome: string }
+    | { type: 'v2step'; iteration: number; phase: 'thinking' | 'running'; name: string; args?: Record<string, unknown> }
+    | { type: 'websearch'; query: string; results: number; pages: number }
+    | { type: 'notice'; text: string; kind?: 'info' | 'error' }
+    | { type: 'previewreload' }
     | { type: 'v2ask'; askId: number; name: string; args: Record<string, unknown> }
 ): void {
   win?.webContents.send('chat:event', { sessionId, ...event })
@@ -213,7 +383,8 @@ function bootWait(ms: number): Promise<void> {
  *  Single-flight: concurrent sends share one attempt; the slot clears when it
  *  settles so a later chat can retry a failed boot. */
 let engineBoot: Promise<boolean> | null = null
-
+/** one boot at a time — the sidebar dot and chat share this (a second
+ *  `ollama serve` on the same port just dies and confuses the log) */
 function ensureOllama(signal?: AbortSignal): Promise<boolean> {
   if (engineBoot) return engineBoot
   engineBoot = (async () => {
@@ -244,20 +415,126 @@ function ensureOllama(signal?: AbortSignal): Promise<boolean> {
   return engineBoot
 }
 
+// QoL state ------------------------------------------------------------------
+// DATA_DIR feeds the log (set once the store exists); `quitting` separates a
+// real quit from a tray-hide so the close button can be intercepted.
+let DATA_DIR = ''
+let quitting = false
+let zoomSaveTimer: ReturnType<typeof setTimeout> | null = null
+let trayHintShown = false // one "it's in the tray" balloon per launch
+let firstWindow = true // startHidden applies to the launch window only
+let renderReloads = 0 // cap renderer auto-reloads after a crash
+
+// A crash on a self-published app reaches us, not a bug tracker: keep the
+// last words in ~/.codezy/logs/main.log. Log AND continue (no rethrow) —
+// the renderer is the UI; a stray main-process rejection must not take the
+// whole app down with no trace.
+process.on('uncaughtException', (e) => {
+  logLine(DATA_DIR, `uncaughtException: ${e.stack ?? e.message}`)
+})
+process.on('unhandledRejection', (r) => {
+  logLine(DATA_DIR, `unhandledRejection: ${r instanceof Error ? (r.stack ?? r.message) : String(r)}`)
+})
+
+/** Show + focus the window (tray menu, deep links, notifications). */
+function revealWindow(): void {
+  if (win && !win.isDestroyed()) {
+    if (!win.isVisible()) win.show()
+    if (win.isMinimized()) win.restore()
+    win.focus()
+  }
+}
+
+/** A codezy:// URL arrived (launch argv, second instance, macOS open-url):
+ *  focus the window and log the request — opening the session comes later. */
+function handleDeepLink(url: string): void {
+  logLine(DATA_DIR, `deep link: ${url}`)
+  const sessionId = sessionIdFromLink(url)
+  if (sessionId) logLine(DATA_DIR, `deep link targets session ${sessionId}`)
+  revealWindow()
+}
+
+// macOS delivers deep links here, possibly before whenReady — register early
+app.on('open-url', (e, url) => {
+  e.preventDefault()
+  handleDeepLink(url)
+})
+
+/** OS "launch at login" follows the setting — applied on boot and on change. */
+function applyLoginItem(s: Settings): void {
+  try {
+    app.setLoginItemSettings({ openAtLogin: s.openAtLogin === true })
+  } catch {
+    /* not supported everywhere (some Linux DEs) — never fatal */
+  }
+}
+
+/** The tray follows `minimizeToTray`; called on boot and on every change. */
+function syncTrayToSetting(s: Settings): void {
+  syncTray(s.minimizeToTray === true, {
+    getWindow: () => win,
+    showWindow: () => {
+      if (win && !win.isDestroyed()) {
+        if (!win.isVisible()) win.show()
+        if (win.isMinimized()) win.restore()
+        win.focus()
+      }
+    },
+    openDataFolder: () => void shell.openPath(DATA_DIR)
+  })
+}
+
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
-    if (win) {
-      if (win.isMinimized()) win.restore()
-      win.focus()
-    }
+  app.on('second-instance', (_e, argv) => {
+    const link = findDeepLink(argv) // a codezy://… launch brings it forward
+    if (link) handleDeepLink(link)
+    revealWindow()
   })
 
   app.whenReady().then(() => {
     initStore() // creates ~/.codezy and friends
+    DATA_DIR = getDataDir()
+    rotateIfNeeded(DATA_DIR) // startup: yesterday's big log → main.old.log
+    logLine(DATA_DIR, `launch ${app.getVersion()} on ${process.platform} (${process.arch})`)
+    applyLoginItem(getSettings())
+    syncTrayToSetting(getSettings())
+    // codezy:// deep links — registration needs the packaged exe (a dev
+    // build declines quietly, which is fine and logged)
+    try {
+      if (!app.setAsDefaultProtocolClient(PROTOCOL)) logLine(DATA_DIR, 'protocol registration declined (dev build?)')
+    } catch (e) {
+      logLine(DATA_DIR, `protocol registration failed: ${e instanceof Error ? e.message : e}`)
+    }
+    const launchLink = findDeepLink(process.argv)
+    if (launchLink) handleDeepLink(launchLink)
     registerIpc()
+
+    // the live site preview: the chat's linked folder, served over
+    // codezy-preview://<sessionId>/<path> like a real web server — the
+    // files on disk ARE the site, so relative CSS/JS/images just work
+    protocol.handle(PREVIEW_SCHEME, async (request) => {
+      try {
+        const url = new URL(request.url)
+        const sessionId = decodeURIComponent(url.hostname)
+        const rel = decodeURIComponent(url.pathname.replace(/^\/+/, '')) || 'index.html'
+        const found = resolvePreviewPath(getSession(sessionId), rel)
+        if (!found) return new Response('not found', { status: 404 })
+        const data = await fs.promises.readFile(found.file)
+        return new Response(data, {
+          headers: {
+            'content-type': mimeFor(found.file),
+            'cache-control': 'no-store',
+            'access-control-allow-origin': '*'
+          }
+        })
+      } catch (e) {
+        return new Response(String((e as Error)?.message ?? e), { status: 500 })
+      }
+    })
+
     createWindow()
 
     // launch-time engine check → the sidebar status dot only. Booting Ollama
@@ -276,7 +553,10 @@ if (!gotLock) {
 
   // MCP children must die with the app — a leaked server process would hold
   // its stdio pipes open after the window is gone.
-  app.on('before-quit', () => mcpDisconnectAll())
+  app.on('before-quit', () => {
+    quitting = true // the close handler must NOT turn this into a hide
+    mcpDisconnectAll()
+  })
 
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()
@@ -294,6 +574,12 @@ function registerIpc(): void {
     // provider it just connected) since this renderer last read them, and
     // only the keys the renderer actually changed may be rewritten.
     const { prev, saved } = patchSettings(patch)
+
+    // QoL: tray + login item + always-on-top track the settings live (flip a
+    // toggle in Settings, no restart needed).
+    if (prev.minimizeToTray !== saved.minimizeToTray) syncTrayToSetting(saved)
+    if (prev.openAtLogin !== saved.openAtLogin) applyLoginItem(saved)
+    if (prev.alwaysOnTop !== saved.alwaysOnTop) win?.setAlwaysOnTop(saved.alwaysOnTop === true)
 
     // Transparent/material is fixed at creation time, so flipping the acrylic
     // theme rebuilds the window (same bounds, ~200 ms).
@@ -334,15 +620,22 @@ function registerIpc(): void {
   // models + health ------------------------------------------------------
   ipcMain.handle('models:list', async () => {
     const s = getSettings()
-    const entries: import('../shared/api').ModelEntry[] = (await listOllamaModelDetails(s.ollamaUrl)).map((m) => ({
-      id: m.id,
-      provider: 'ollama',
-      providerName: 'Ollama (local)',
-      size: m.size,
-      quant: m.quant,
-      family: m.family,
-      parameter: m.parameter
-    }))
+    const local = await listOllamaModelDetails(s.ollamaUrl)
+    // Ask the engine what each model can DO (Ollama /api/show). A model
+    // without `tools` cannot run agent mode — the picker badges it and
+    // chat:send falls back to edit blocks instead of a raw 400.
+    const entries: import('../shared/api').ModelEntry[] = await Promise.all(
+      local.map(async (m) => ({
+        id: m.id,
+        provider: 'ollama',
+        providerName: 'Ollama (local)',
+        size: m.size,
+        quant: m.quant,
+        family: m.family,
+        parameter: m.parameter,
+        tools: modelSupportsTools(await modelCapabilities(s.ollamaUrl, m.id))
+      }))
+    )
     for (const p of s.providers) {
       const ids = await listOpenAIModels(p)
       entries.push(...ids.map((id) => ({ id, provider: p.id, providerName: p.name })))
@@ -411,6 +704,34 @@ function registerIpc(): void {
   ipcMain.handle('tasks:stop', (_e, uid: string) => stopV2Task(String(uid)))
 
   // chat streaming -------------------------------------------------------
+  /**
+   * Searches the web for this turn when the user asked for it (or the
+   * question is about something that changes), and returns the block the
+   * model reads. The normal chat has no tools, so this is what gives it a
+   * web. Never throws, never blocks long: a slow or blocked search simply
+   * means no web block — the reply still goes out.
+   */
+  async function resolveWebContext(
+    session: Session,
+    settings: Settings,
+    onSearch: (event: { type: 'websearch'; query: string; results: number; pages: number }) => void
+  ): Promise<{ block: string } | null> {
+    const mode = settings.webSearch ?? 'auto'
+    if (mode === 'off') return null
+    const last = [...(session.messages ?? [])].reverse().find((m) => m.role === 'user')
+    const text = String(last?.content ?? '')
+    if (!text.trim()) return null
+    if (mode === 'auto' && !looksLikeWebQuery(text)) return null
+    try {
+      const ctx = await buildWebContext(text)
+      if (!ctx) return null
+      onSearch({ type: 'websearch', query: ctx.query, results: ctx.hits.length, pages: ctx.pages.length })
+      return { block: ctx.block }
+    } catch {
+      return null
+    }
+  }
+
   ipcMain.handle('chat:send', async (_e, sessionId: string) => {
     const session = getSession(sessionId)
     if (!session) throw new Error('Session not found')
@@ -421,8 +742,12 @@ function registerIpc(): void {
       ? listProjects().find((pr) => pr.id === session.projectId) ?? null
       : null
 
-    const messages = buildMessages(session, project, settings)
     const target = targetFor(settings, session)
+    // thinking mode (long mode): the Thinking button — sampling shifts to the
+    // careful end (deep effort's profile) on top of the prompting section that
+    // buildMessages already added. targetFor hands back a fresh object per
+    // call, so mutating it here never leaks into settings or the session.
+    if (settings.thinkingMode) target.effort = 'deep'
     const controller = new AbortController()
     aborts.set(sessionId, controller)
 
@@ -437,25 +762,69 @@ function registerIpc(): void {
         if (controller.signal.aborted) throw new Error('stopped while starting Ollama')
       }
 
+      // Agent mode needs a model that can CALL tools. Ollama answers a tools
+      // schema with HTTP 400 ("does not support tools") for models like
+      // codellama — that is what killed the turn with an error instead of an
+      // edit. Ask the engine first; when it says no, run this turn in the
+      // classic flow (which now carries the REAL file contents).
+      let agent = v2Active(session, settings)
+      let modelNote: string | undefined
+      if (agent && target.kind === 'ollama') {
+        const caps = await modelCapabilities(target.baseUrl, target.model)
+        if (!modelSupportsTools(caps)) {
+          agent = false
+          modelNote = `${target.model} cannot call tools, so this turn uses the edit-block flow.`
+          emit(sessionId, {
+            type: 'notice',
+            text: `${target.model} can't call tools, so agent mode can't run. CODEZY switched this turn to edit blocks and included your linked files. Pick a tool-capable model (e.g. qwen2.5-coder:7b) for read/search/write tools.`
+          })
+        }
+      }
+
+      const web = await resolveWebContext(session, settings, (ev) =>
+        emit(sessionId, ev as Parameters<typeof emit>[1])
+      )
+      let messages = buildMessages(session, project, settings, web?.block, { agent, modelNote })
+
       let stats: { promptTokens?: number; completionTokens?: number }
       // agent mode (v2) only engages over a linked folder — without one the
       // chat runs on the normal engine instead of erroring (the folder link
       // is a code-mode thing, plain conversation never needs it)
-      const agent = v2Active(session, settings)
       if (agent) {
         // agent mode (v2): the shared harness loop — tool calls, safety
         // validation and the per-action approval dialog, all from
-        // cli/lib/harness.mjs (the same core the terminal shell uses)
-        const out = await runV2({
-          session,
-          settings,
-          messages,
-          signal: controller.signal,
-          emit: (event) => emit(sessionId, event as Parameters<typeof emit>[1]),
-          ask: (name, args) => askV2(sessionId, name, args)
-        })
-        acc = out.reply
-        stats = out.stats
+        // codezy-cli/lib/harness.mjs (the same core the terminal shell uses)
+        try {
+          const out = await runV2({
+            session,
+            settings,
+            messages,
+            signal: controller.signal,
+            emit: (event) => emit(sessionId, event as Parameters<typeof emit>[1]),
+            ask: (name, args) => askV2(sessionId, name, args)
+          })
+          acc = out.reply
+          stats = out.stats
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          if (!/does not support tools|tool.*not supported/i.test(msg)) throw err
+          // Old Ollama / an unknown model slipped past /api/show: retry the
+          // SAME turn as a normal completion with the files in the prompt.
+          agent = false
+          modelNote = `${target.model} does not support tools.`
+          emit(sessionId, {
+            type: 'notice',
+            text: `${target.model} does not support tools — CODEZY retried this turn with edit blocks and your real files.`
+          })
+          messages = buildMessages(session, project, settings, web?.block, { agent, modelNote })
+          stats = await streamChat(target, messages, {
+            signal: controller.signal,
+            onDelta: (text) => {
+              acc += text
+              emit(sessionId, { type: 'delta', text })
+            }
+          })
+        }
       } else {
         stats = await streamChat(target, messages, {
           signal: controller.signal,
@@ -551,6 +920,18 @@ function registerIpc(): void {
   // web search (/search) ---------------------------------------------------
   ipcMain.handle('search:query', (_e, query: string) => webSearch(query))
 
+  // live site preview -----------------------------------------------------
+  ipcMain.handle('preview:files', (_e, sessionId: string) => listPreviewFiles(getSession(sessionId)))
+  ipcMain.handle('preview:default', (_e, sessionId: string) => defaultPreviewPath(getSession(sessionId)))
+  ipcMain.handle('preview:watch', (_e, sessionId: string) => {
+    watchPreview(String(sessionId))
+    return true
+  })
+  ipcMain.handle('preview:unwatch', (_e, sessionId: string) => {
+    unwatchPreview(String(sessionId))
+    return true
+  })
+
   // git (/diff) — changes vs HEAD in the chat's first linked folder --------
   ipcMain.handle('git:diff', (_e, sessionId: string, pathspec?: string) => {
     const session = getSession(sessionId)
@@ -593,6 +974,12 @@ function registerIpc(): void {
   ipcMain.handle('files:read', (_e, sessionId: string, target: string) => {
     const session = getSession(sessionId)
     return readFileIn(session?.linkedFolders ?? [], target)
+  })
+  ipcMain.handle('files:search', (_e, sessionId: string, query: string) => {
+    const session = getSession(sessionId)
+    const roots = session?.linkedFolders ?? []
+    if (!roots.length) return { hits: [], scanned: 0, truncated: false }
+    return searchFiles(roots, query)
   })
   // open / reveal files — clicking a chip goes straight to the saved file
   ipcMain.handle('files:open', (_e, target: string) => shell.openPath(target))
@@ -762,39 +1149,111 @@ function registerIpc(): void {
     return target
   })
 
+  // diagnostics folder — the log file lives here (Settings → open logs)
+  ipcMain.handle('app:openLogs', () => {
+    const dir = path.join(DATA_DIR, 'logs')
+    try {
+      fs.mkdirSync(dir, { recursive: true })
+    } catch {
+      /* best effort — openPath reports the failure below */
+    }
+    return shell.openPath(dir)
+  })
+
+  // boot the engine from the UI: the sidebar dot is clickable while offline
+  ipcMain.handle('app:startOllama', async () => {
+    const ok = await ensureOllama()
+    return { ok }
+  })
+
   // terminal interface -----------------------------------------------------
-  ipcMain.handle('app:openTerminal', () => {
-    const root = app.getAppPath()
-    const cli = path.join(root, 'cli', 'codezy.mjs')
-    if (!fs.existsSync(cli)) return `CLI script not found: ${cli}`
-    const plain = (): string | null => {
+  /**
+   * The published CLI, when it is installed globally (npm i -g codezy-cli).
+   * The INSTALLER ships no CLI — the terminal agent is its own npm package —
+   * so this is how the desktop app reaches it without shipping a copy.
+   */
+  function globalCliEntry(): string | null {
+    const roots: string[] = []
+    if (process.platform === 'win32') {
+      const appData = process.env.APPDATA
+      if (appData) roots.push(path.join(appData, 'npm', 'node_modules', 'codezy-cli'))
+    } else {
+      roots.push('/usr/local/lib/node_modules/codezy-cli', '/usr/lib/node_modules/codezy-cli')
+    }
+    for (const r of roots) {
+      const entry = path.join(r, 'index.mjs')
       try {
-        const c = spawn('cmd.exe', ['/k', 'node', cli], {
-          detached: true,
-          stdio: 'ignore',
-          cwd: root
-        })
-        c.unref()
-        return null
-      } catch (e) {
-        return `Could not open the terminal: ${e instanceof Error ? e.message : e}`
+        if (fs.existsSync(entry)) return entry
+      } catch {
+        /* ignore */
       }
     }
-    // Windows Terminal first: it inherits the system theme (acrylic, colors)
-    // the same way opencode opens. `-M` = maximized (fills the screen, taskbar
-    // stays). Falls back to a plain console window.
-    try {
-      const wt = spawn(
-        'wt.exe',
-        ['-M', '-w', 'new', '--title', 'CODEZY', '-d', root, 'cmd', '/k', 'node', path.join('cli', 'codezy.mjs')],
-        { detached: true, stdio: 'ignore' }
-      )
-      wt.on('error', () => plain())
-      wt.unref()
-      return null
-    } catch {
-      return plain()
+    return null
+  }
+
+  /** The CLI that ships WITH the app: next to the app in a dev checkout, or
+   *  in resources/ in a packaged build (outside the asar — a plain `node`
+   *  cannot read a file out of an asar). index.mjs is the 3.2.0 unified REPL;
+   *  codezy.mjs is the legacy TUI kept as a fallback for older bundles. */
+  function bundledCliEntry(): string | null {
+    const candidates = [
+      path.join(app.getAppPath(), '..', 'codezy-cli', 'index.mjs'),
+      path.join(app.getAppPath(), 'cli', 'index.mjs'),
+      process.resourcesPath ? path.join(process.resourcesPath, 'cli', 'index.mjs') : null,
+      path.join(app.getAppPath(), '..', 'codezy-cli', 'codezy.mjs'),
+      path.join(app.getAppPath(), 'cli', 'codezy.mjs'),
+      process.resourcesPath ? path.join(process.resourcesPath, 'cli', 'codezy.mjs') : null
+    ].filter((p): p is string => !!p)
+    for (const c of candidates) {
+      try {
+        if (fs.existsSync(c)) return c
+      } catch {
+        /* ignore */
+      }
     }
+    return null
+  }
+
+  ipcMain.handle('app:openTerminal', async (_e, sessionId?: string) => {
+    // WHERE it opens: the chat's linked folder, else the user's home —
+    // never the asar (that is not a working directory).
+    const session = sessionId ? getSession(String(sessionId)) : null
+    const cwd = session?.linkedFolders?.[0] ?? os.homedir()
+    // WHAT runs: the CLI that ships with the app → a global install →
+    // npx, which fetches the published package on the spot.
+    const bundled = bundledCliEntry()
+    let cmd: { file: string; args: string[] }
+    if (bundled) {
+      cmd = { file: 'node', args: [bundled] }
+    } else {
+      const global = globalCliEntry()
+      cmd = global
+        ? { file: 'node', args: [global] }
+        : { file: 'npx', args: ['-y', '-p', 'codezy-cli', 'codezy'] }
+    }
+    // Walk the platform plan (terminal.ts): the first terminal that actually
+    // SPAWNS wins, a missing binary ('error') falls through to the next
+    // attempt, and a total miss reports what it tried instead of silently
+    // doing nothing. Windows Terminal first (system theme), then cmd.exe.
+    const plan = terminalPlan(process.platform, cwd, cmd)
+    for (const a of plan) {
+      const outcome = await new Promise<string | null>((resolve) => {
+        let c: ReturnType<typeof spawn>
+        try {
+          c = spawn(a.file, a.args, { detached: true, stdio: 'ignore', cwd: a.cwd ?? cwd })
+        } catch (e) {
+          resolve(e instanceof Error ? e.message : String(e))
+          return
+        }
+        c.once('spawn', () => {
+          c.unref()
+          resolve(null)
+        })
+        c.once('error', (e) => resolve(e.message))
+      })
+      if (outcome === null) return null // a terminal took it
+    }
+    return `Could not open a terminal — tried ${plan.map((a) => a.file).join(', ')}`
   })
 
   // dialogs --------------------------------------------------------------
@@ -869,6 +1328,14 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('update:apply', async () => {
+    if (process.platform !== 'win32') {
+      // No in-place installer off Windows (NSIS is Windows-only): hand the
+      // release page over so a downloaded .dmg/.AppImage still leads to an
+      // install instead of a dead button. The app must NOT quit — the user
+      // installs manually and the pill stays honest.
+      void shell.openExternal(updateCheck?.release?.page ?? `https://github.com/${UPDATE_REPO}/releases`)
+      return { ok: false, error: 'opened the release page — auto-install is Windows-only for now' }
+    }
     if (!updateFile) return { error: 'update not downloaded yet' }
     const res = await applyUpdate(updateFile)
     if (res.ok) {

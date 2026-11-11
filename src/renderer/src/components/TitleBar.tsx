@@ -1,5 +1,5 @@
 import { useApp } from '../store/app'
-import { CubeLogo, IconCode, IconDownload, IconMinus, IconSidebar, IconSquare, IconX } from './Icons'
+import { CubeLogo, IconCode, IconDownload, IconLive, IconMinus, IconPreview, IconSidebar, IconSquare, IconX } from './Icons'
 
 /** Custom frameless title bar: logo + chat title + sidebar toggle + controls. */
 export default function TitleBar({ title }: { title?: string }) {
@@ -7,6 +7,11 @@ export default function TitleBar({ title }: { title?: string }) {
   const toggleSidebar = useApp((s) => s.toggleSidebar)
   const ideOpen = useApp((s) => s.ideOpen)
   const toggleIde = useApp((s) => s.toggleIde)
+  const previewOpen = useApp((s) => s.previewOpen)
+  const setPreviewOpen = useApp((s) => s.setPreviewOpen)
+  const liveOpen = useApp((s) => s.liveOpen)
+  const toggleLive = useApp((s) => s.toggleLive)
+  const advanced = useApp((s) => s.settings?.showAdvanced === true)
   // v2.6 — the quiet update pill: shown only when GitHub is strictly newer
   // AND the user didn't wave this exact version away.
   const updateInfo = useApp((s) => s.updateInfo)
@@ -31,13 +36,33 @@ export default function TitleBar({ title }: { title?: string }) {
         <IconSidebar />
       </button>
       <button
-        className={`tb-btn tip-below${ideOpen ? ' active' : ''}`}
-        data-tip="Cowork — browse and edit this chat's files · Ctrl+E"
-        aria-label="Toggle cowork editor"
-        onClick={toggleIde}
+        className={`tb-btn tip-below${liveOpen ? ' active' : ''}`}
+        data-tip="Live edits — watch what the agent is writing, as it writes it"
+        aria-label="Toggle live edit panel"
+        onClick={toggleLive}
       >
-        <IconCode />
+        <IconLive />
       </button>
+      {advanced && (
+        <>
+          <button
+            className={`tb-btn tip-below${ideOpen ? ' active' : ''}`}
+            data-tip="Cowork — browse and edit this chat's files · Ctrl+E"
+            aria-label="Toggle cowork editor"
+            onClick={toggleIde}
+          >
+            <IconCode />
+          </button>
+          <button
+            className={`tb-btn tip-below${previewOpen ? ' active' : ''}`}
+            data-tip="Live preview — watch the site build, live"
+            aria-label="Toggle live site preview"
+            onClick={() => setPreviewOpen(!previewOpen)}
+          >
+            <IconPreview />
+          </button>
+        </>
+      )}
       <div className="logo">
         <CubeLogo />
         CODEZY

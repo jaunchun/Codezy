@@ -400,6 +400,7 @@ function v2ActivityLabel(a: { name: string; args: Record<string, unknown>; outco
   const arg = (k: string) => String(a.args?.[k] ?? '')
   if (a.outcome === 'denied') return `✗ ${a.name} — you denied it`
   if (a.outcome === 'rejected') return `✗ ${a.name} — blocked by the safety check`
+  if (a.outcome === 'repeated') return `↻ ${a.name} — same call, skipped`
   if (a.outcome === 'error') return `✗ ${a.name} failed`
   if (a.outcome === 'unknown') return `✗ unknown tool: ${a.name}`
   switch (a.name) {
@@ -425,6 +426,25 @@ function v2ActivityLabel(a: { name: string; args: Record<string, unknown>; outco
       }
       return `${a.name}…`
   }
+}
+
+/**
+ * v3.5 — the live agent rail: what the model is doing RIGHT NOW.
+ * Three phases, three pulses: 'thinking' (the model is generating), 'running'
+ * (a tool is executing — the label names it: "reading src/main/index.ts…"),
+ * and 'done' (the step finished, the trace keeps the record).
+ */
+function ActivityRail() {
+  const a = useApp((s) => s.v2Activity)
+  const phase = a?.phase ?? 'thinking'
+  const step = a?.iteration ?? 0
+  return (
+    <div className={`act-rail is-${phase}`}>
+      <span className="act-dot" aria-hidden />
+      {step > 0 && <span className="act-step">step {step}</span>}
+      <span className="act-label">{a ? v2ActivityLabel(a) : 'thinking…'}</span>
+    </div>
+  )
 }
 
 /** The three things people ask a fresh reply for — one tap, no typing. */
@@ -551,8 +571,12 @@ const HighlightCtor = (globalThis as unknown as { Highlight?: new (...ranges: Ra
 const supportsFind = !!cssHighlights && typeof HighlightCtor === 'function'
 
 export default function ChatView() {
-  const { sessions, activeId, streamText, streaming, usageOpen, tasksOpen, setComposerDraft, v2Activity, scrollTarget } = useApp()
+  const { sessions, activeId, streamText, streaming, usageOpen, tasksOpen, setComposerDraft, v2Activity, webNote, scrollTarget } = useApp()
   const session = sessions.find((x) => x.id === activeId)
+  const recents = sessions
+    .filter((x) => !x.archived && x.id !== activeId && x.messages.length > 0)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, 3)
   const bottom = useRef<HTMLDivElement>(null)
   const chatRef = useRef<HTMLDivElement>(null)
   // only chase the bottom while the user is already there — scrolling up to
@@ -713,6 +737,7 @@ export default function ChatView() {
   // live activity: once the model starts emitting edit blocks it is proposing
   // files — say so instead of the generic "writing…" hint
   const proposing = streaming && streamText.includes('===FILE')
+  const liveOpen = useApp((s) => s.liveOpen)
 
   return (
     <>
@@ -755,19 +780,42 @@ export default function ChatView() {
       <div className="chat" ref={chatRef} onScroll={onScroll}>
         {!session || session.messages.length === 0 ? (
           <div className="empty-state">
-            <CubeLogo withBrackets />
-            <div className="name">CODEZY</div>
-            <div>
-              Ask anything… try <b>/help</b> for commands
-              {session?.goal ? ` · goal: ${session.goal}` : ''}
+            <div className="empty-mark">
+              <CubeLogo withBrackets />
+            </div>
+            <div className="empty-title">
+              <div className="name">CODEZY</div>
+              <div className="tagline">
+                a local coding agent — chat freely, or link a folder and let it work
+                {session?.goal ? ` · goal: ${session.goal}` : ''}
+              </div>
             </div>
             <div className="starter-grid">
-              {STARTERS.map((st) => (
+              {STARTERS.map((st, i) => (
                 <button key={st.label} className="starter-card" onClick={() => setComposerDraft(st.text)}>
+                  <span className="starter-idx">{String(i + 1).padStart(2, '0')}</span>
                   <b>{st.label}</b>
-                  <span>{st.desc}</span>
+                  <span className="starter-desc">{st.desc}</span>
+                  <span className="starter-go" aria-hidden>→</span>
                 </button>
               ))}
+            </div>
+            {recents.length > 0 && (
+              <div className="empty-recents">
+                <div className="empty-recents-title">Continue where you left off</div>
+                {recents.map((r) => (
+                  <button key={r.id} className="empty-recent" onClick={() => useApp.getState().setActive(r.id)}>
+                    <span className="empty-recent-dot" aria-hidden />
+                    <span className="empty-recent-name">{r.title}</span>
+                    <span className="empty-recent-when">
+                      {new Date(r.updatedAt).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="empty-hint">
+              <kbd>/help</kbd> commands · <kbd>Ctrl+E</kbd> the editor · <kbd>Ctrl+/</kbd> every shortcut
             </div>
           </div>
         ) : (
@@ -827,6 +875,13 @@ export default function ChatView() {
           )
         )}
 
+        {webNote && (
+          <div className="web-note" title={webNote.query ? `web search: ${webNote.query}` : undefined}>
+            <span className="web-note-dot" aria-hidden />
+            {webNote.text}
+          </div>
+        )}
+
         {streaming && streamText && (
           <div className="msg-row">
             <div className="msg">
@@ -834,7 +889,9 @@ export default function ChatView() {
               {proposing ? (
                 <div className="activity">
                   <span className="act-dot" aria-hidden />
-                  proposing file edits — a review card appears when the reply finishes
+                  {liveOpen
+                    ? 'proposing file edits — streaming in the live panel'
+                    : 'proposing file edits — a review card appears when the reply finishes'}
                 </div>
               ) : (
                 <div className="stamp writing">writing…</div>
@@ -845,10 +902,7 @@ export default function ChatView() {
         {streaming && !streamText && (
           <div className="msg-row">
             <div className="msg">
-              <div className="activity">
-                <span className="act-dot" aria-hidden />
-                {v2Activity ? v2ActivityLabel(v2Activity) : 'thinking…'}
-              </div>
+              <ActivityRail />
             </div>
           </div>
         )}

@@ -81,7 +81,7 @@ export default function HistoryModal() {
     })
 
   return (
-    <div className="usage-panel hist-panel" role="region" aria-label="Edit history">
+    <div className="usage-panel hist-panel" role="dialog" aria-label="Edit history">
       <div className="usage-body">
         <div className="usage-head">
           <div className="usage-tabs">
@@ -94,7 +94,7 @@ export default function HistoryModal() {
             <button onClick={() => void stepBack()} title="Revert the newest batch (/undo)">
               Undo newest
             </button>
-            <button className="x" onClick={() => setOpen(false)} title="Close (Esc)">
+            <button className="x" onClick={() => setOpen(false)} title="Close (Esc)" aria-label="Close edit history">
               ✕
             </button>
           </div>

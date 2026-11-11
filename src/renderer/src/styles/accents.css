@@ -1,0 +1,5 @@
+/* 3.2.0 Signal accents */
+html[data-palette='lime'] { --accent: #C6F24E; --accent-2: #C6F24E; }
+html[data-palette='blue'] { --accent: #6FA8FF; --accent-2: #6FA8FF; }
+html[data-palette='amber'] { --accent: #FFB454; --accent-2: #FFB454; }
+html[data-palette='magenta'] { --accent: #E48BFF; --accent-2: #E48BFF; }

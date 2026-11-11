@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useApp } from '../store/app'
+import { useFocusTrap } from '../lib/useFocusTrap'
 import { COMMANDS, THEME_NAMES } from '../../../shared/commands'
 
 interface Entry {
@@ -18,8 +19,10 @@ export default function Palette() {
   const [q, setQ] = useState('')
   const [idx, setIdx] = useState(0)
   const input = useRef<HTMLInputElement>(null)
+  const panel = useRef<HTMLDivElement>(null)
 
   const open = s.paletteOpen
+  useFocusTrap(open, panel, () => useApp.getState().setPaletteOpen(false), input)
 
   // focus the input whenever the palette opens
   useEffect(() => {
@@ -42,13 +45,13 @@ export default function Palette() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open])
-
   const entries = useMemo<Entry[]>(() => {
     if (!open) return []
     const themeNext =
       THEME_NAMES[(THEME_NAMES.indexOf((s.settings?.theme ?? 'dark') as (typeof THEME_NAMES)[number]) + 1) % THEME_NAMES.length]
     const modeNext = MODES[(MODES.indexOf((s.settings?.mode ?? 'build') as (typeof MODES)[number]) + 1) % 3]
 
+    const advancedUI = s.settings?.showAdvanced === true
     const actions: Entry[] = [
       { id: 'a-new', group: 'Actions', label: 'New chat', hint: 'Ctrl+N', run: () => void s.newChat() },
       {
@@ -60,6 +63,38 @@ export default function Palette() {
       },
       { id: 'a-focus', group: 'Actions', label: 'Focus the composer', hint: 'Esc from here', run: () => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus() },
       { id: 'a-settings', group: 'Actions', label: 'Open settings', hint: 'Ctrl+,', run: () => s.setSettingsOpen(true) },
+      { id: 'a-keys', group: 'Actions', label: 'Keyboard shortcuts', hint: 'Ctrl+/', run: () => s.toggleShortcuts() },
+      {
+        id: 'a-find',
+        group: 'Actions',
+        label: 'Find in this chat',
+        hint: 'Ctrl+F',
+        run: () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true }))
+      },
+      {
+        id: 'a-copy',
+        group: 'Actions',
+        label: 'Copy the whole conversation',
+        run: () => void s.copyTranscript()
+      },
+      {
+        id: 'a-live',
+        group: 'Actions',
+        label: s.liveOpen ? 'Close the live edits panel' : 'Live edits — watch what the agent writes',
+        run: () => s.toggleLive()
+      },
+      {
+        id: 'a-export',
+        group: 'Actions',
+        label: 'Export this chat as markdown',
+        run: () => s.activeId && void s.exportSession(s.activeId)
+      },
+      { id: 'a-clear', group: 'Actions', label: 'Clear the chat', run: () => void s.send('/clear') }
+    ]
+
+    // Advanced actions stay in the source (and in advanced mode) but never
+    // crowd the simple palette.
+    const advancedActions: Entry[] = [
       {
         id: 'a-mcp',
         group: 'Actions',
@@ -76,20 +111,12 @@ export default function Palette() {
         hint: '/history',
         run: () => s.setHistoryOpen(true)
       },
-      { id: 'a-keys', group: 'Actions', label: 'Keyboard shortcuts', hint: 'Ctrl+/', run: () => s.toggleShortcuts() },
       {
         id: 'a-cowork',
         group: 'Actions',
         label: s.ideOpen ? 'Close the cowork editor' : 'Open the cowork editor',
         hint: 'Ctrl+E',
         run: () => s.toggleIde()
-      },
-      {
-        id: 'a-find',
-        group: 'Actions',
-        label: 'Find in this chat',
-        hint: 'Ctrl+F',
-        run: () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true }))
       },
       {
         id: 'a-search',
@@ -99,16 +126,11 @@ export default function Palette() {
         run: () => s.setSearchOpen(true)
       },
       {
-        id: 'a-copy',
+        id: 'a-find-files',
         group: 'Actions',
-        label: 'Copy the whole conversation',
-        run: () => void s.copyTranscript()
-      },
-      {
-        id: 'a-export',
-        group: 'Actions',
-        label: 'Export this chat as markdown',
-        run: () => s.activeId && void s.exportSession(s.activeId)
+        label: 'Find in files — search the linked folders',
+        hint: 'Ctrl+Shift+G',
+        run: () => s.setFindFilesOpen(true)
       },
       {
         id: 'a-export-all',
@@ -141,10 +163,10 @@ export default function Palette() {
         run: () =>
           void s.updateSettings({ density: (s.settings?.density ?? 'cozy') === 'cozy' ? 'compact' : 'cozy' })
       },
-      { id: 'a-clear', group: 'Actions', label: 'Clear the chat', run: () => void s.send('/clear') },
       { id: 'a-theme', group: 'Actions', label: `Switch theme to ${themeNext}`, run: () => void s.updateSettings({ theme: themeNext }) },
       { id: 'a-mode', group: 'Actions', label: `Mode: ${modeNext} (now ${s.settings?.mode ?? 'build'})`, run: () => void s.updateSettings({ mode: modeNext }) }
     ]
+    if (advancedUI) actions.push(...advancedActions)
     if (s.streaming) actions.push({ id: 'a-stop', group: 'Actions', label: 'Stop generating', run: () => void s.stop() })
 
     const chats: Entry[] = s.sessions.map((x) => ({
@@ -155,7 +177,7 @@ export default function Palette() {
       run: () => s.setActive(x.id)
     }))
 
-    const commands: Entry[] = COMMANDS.map((c) => ({
+    const commands: Entry[] = COMMANDS.filter((c) => advancedUI || !c.advanced).map((c) => ({
       id: c.name,
       group: 'Commands',
       label: c.name,
@@ -220,10 +242,11 @@ export default function Palette() {
   let lastGroup = ''
   return (
     <div className="palette-overlay" onClick={close}>
-      <div className="palette" onClick={(e) => e.stopPropagation()}>
+      <div className="palette" ref={panel} role="dialog" aria-modal="true" aria-label="Command palette" onClick={(e) => e.stopPropagation()}>
         <input
           ref={input}
           value={q}
+          aria-label="Search actions, chats and commands"
           placeholder="Search actions, chats, commands…"
           onChange={(e) => {
             setQ(e.target.value)

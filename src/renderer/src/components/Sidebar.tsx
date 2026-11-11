@@ -38,6 +38,7 @@ const readSort = (): ChatSort => {
 
 export default function Sidebar() {
   const s = useApp()
+  const advanced = s.settings?.showAdvanced === true
   const [adding, setAdding] = useState(false)
   const [name, setName] = useState('')
   const [group, setGroup] = useState('')
@@ -53,6 +54,15 @@ export default function Sidebar() {
   const [q, setQ] = useState('')
   const [showArchived, setShowArchived] = useState(false)
   const [sort, setSort] = useState<ChatSort>(readSort)
+
+  /** Enter/Space activate a div row — the sidebar is a list of actions. */
+  const rowKey =
+    (run: () => void) =>
+    (e: React.KeyboardEvent<HTMLDivElement>): void => {
+      if (e.key !== 'Enter' && e.key !== ' ') return
+      e.preventDefault()
+      run()
+    }
 
   // close the context / delete-confirm menu on outside clicks / Escape
   useEffect(() => {
@@ -128,6 +138,8 @@ export default function Sidebar() {
 
   return (
     <aside className="sidebar">
+      {advanced && (
+      <>
       {/* PROJECTS ------------------------------------------------------- */}
       <div className="side-section-title">
         Projects
@@ -177,7 +189,12 @@ export default function Sidebar() {
         </div>
       )}
 
+      </>
+      )}
+
       <div className="side-scroll">
+        {advanced && (
+        <>
         {[...groups.entries()].map(([groupName, items]) => (
           <div key={groupName}>
             <div className="side-section-title">{groupName}</div>
@@ -185,7 +202,10 @@ export default function Sidebar() {
               <div
                 key={p.id}
                 className={`side-item ${s.filterProjectId === p.id ? 'active' : ''}`}
+                role="button"
+                tabIndex={0}
                 onClick={() => s.setFilter(p.id)}
+                onKeyDown={rowKey(() => s.setFilter(p.id))}
                 title={p.rootPath ?? p.name}
               >
                 <IconFolder className="icon" />
@@ -193,7 +213,16 @@ export default function Sidebar() {
                 <IconTrash
                   className="icon"
                   style={{ marginLeft: 'auto', opacity: 0.45 }}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Remove project ${p.name}`}
                   onClick={(e) => {
+                    e.stopPropagation()
+                    void s.removeProject(p.id)
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter' && e.key !== ' ') return
+                    e.preventDefault()
                     e.stopPropagation()
                     void s.removeProject(p.id)
                   }}
@@ -202,9 +231,18 @@ export default function Sidebar() {
             ))}
           </div>
         ))}
+      </>
+      )}
 
         {/* NEW CHAT ----------------------------------------------------- */}
-        <div className="side-item" style={{ color: 'var(--text)', border: '1px solid var(--border-strong)' }} onClick={() => void s.newChat(s.filterProjectId)}>
+        <div
+          className="side-item"
+          role="button"
+          tabIndex={0}
+          style={{ color: 'var(--text)', border: '1px solid var(--border-strong)' }}
+          onClick={() => void s.newChat(s.filterProjectId)}
+          onKeyDown={rowKey(() => void s.newChat(s.filterProjectId))}
+        >
           <IconPlus className="icon" />
           New chat
         </div>
@@ -215,21 +253,40 @@ export default function Sidebar() {
           <span className="grow" />
           <span
             className="side-mini"
+            role="button"
+            tabIndex={0}
             title="Sort by recent / name"
             onClick={() => changeSort(sort === 'recent' ? 'name' : 'recent')}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter' && e.key !== ' ') return
+              e.preventDefault()
+              changeSort(sort === 'recent' ? 'name' : 'recent')
+            }}
           >
             {sort === 'recent' ? 'recent' : 'A→Z'}
           </span>
-          <button
-            className="side-mini"
-            title="Export every chat as one Markdown file"
-            onClick={() => void s.exportAll()}
-            style={{ display: 'grid', placeItems: 'center', padding: 2 }}
-          >
-            <IconDownload style={{ width: 13, height: 13 }} />
-          </button>
+          {advanced && (
+            <button
+              className="side-mini"
+              title="Export every chat as one Markdown file"
+              onClick={() => void s.exportAll()}
+              style={{ display: 'grid', placeItems: 'center', padding: 2 }}
+            >
+              <IconDownload style={{ width: 13, height: 13 }} />
+            </button>
+          )}
           {s.filterProjectId && (
-            <span style={{ cursor: 'pointer' }} onClick={() => s.setFilter(null)}>
+            <span
+              role="button"
+              tabIndex={0}
+              style={{ cursor: 'pointer' }}
+              onClick={() => s.setFilter(null)}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter' && e.key !== ' ') return
+                e.preventDefault()
+                s.setFilter(null)
+              }}
+            >
               clear
             </span>
           )}
@@ -247,9 +304,14 @@ export default function Sidebar() {
             }}
           />
           {q && (
-            <span className="side-search-x" onClick={() => setQ('')} title="Clear">
+            <button
+              className="side-search-x"
+              onClick={() => setQ('')}
+              title="Clear"
+              aria-label="Clear chat search"
+            >
               <IconX style={{ width: 11, height: 11 }} />
-            </span>
+            </button>
           )}
         </div>
 
@@ -257,9 +319,15 @@ export default function Sidebar() {
           <div
             key={session.id}
             className={`side-item ${s.activeId === session.id ? 'active' : ''}${session.archived ? ' archived' : ''}`}
+            role="button"
+            tabIndex={0}
+            aria-current={s.activeId === session.id ? 'page' : undefined}
             onClick={() => {
               if (renamingId !== session.id) s.setActive(session.id)
             }}
+            onKeyDown={rowKey(() => {
+              if (renamingId !== session.id) s.setActive(session.id)
+            })}
             onContextMenu={(e) => {
               e.preventDefault()
               setRenamingId(null)
@@ -328,7 +396,13 @@ export default function Sidebar() {
 
         {/* archived chats stay one click away */}
         {archivedCount > 0 && (
-          <div className="side-item side-archived" onClick={() => setShowArchived((v) => !v)}>
+          <div
+            className="side-item side-archived"
+            role="button"
+            tabIndex={0}
+            onClick={() => setShowArchived((v) => !v)}
+            onKeyDown={rowKey(() => setShowArchived((v) => !v))}
+          >
             <IconSquare className="icon" />
             {showArchived ? 'Hide archived' : 'Show archived'}
             <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-3)' }}>
@@ -450,6 +524,8 @@ export default function Sidebar() {
           document.body
         )}
 
+      {advanced && (
+      <>
       {/* Drive quick toggle — sits ABOVE the footer line (as sketched) */}
       <div className="drive-fab-row">
         <button
@@ -467,25 +543,37 @@ export default function Sidebar() {
           <IconDrive style={{ width: 17, height: 17 }} />
         </button>
       </div>
+      </>
+      )}
 
       {/* FOOTER ---------------------------------------------------------- */}
       <div className="side-footer">
-        <div className="status-row" title="Ollama connection">
-          <span className={`dot ${s.ollama}`} />
-          {s.ollama === 'online' ? effModel : s.ollama === 'checking' ? 'Checking…' : 'Ollama offline'}
-        </div>
-
         <div
-          className="side-item"
+          className={`status-row${s.ollama === 'offline' ? ' clickable' : ''}`}
+          title={s.ollama === 'offline' ? 'Ollama is offline — click to start it' : 'Ollama connection'}
           onClick={() => {
-            void window.codezy.app.openTerminal().then((err) => {
-              if (err) s.addNotice(err, 'error')
-            })
+            // offline dot is a button: boot the engine right here (the main
+            // process spawns `ollama serve`, the watch flips the dot online)
+            if (s.ollama === 'offline') void s.bootOllama()
           }}
         >
-          <IconTerminal className="icon" />
-          Open terminal interface
+          <span className={`dot ${s.ollama}`} />
+          {s.ollama === 'online' ? effModel : s.ollama === 'checking' ? 'Checking…' : 'Ollama offline — click to start'}
         </div>
+
+        {advanced && (
+          <div
+            className="side-item"
+            onClick={() => {
+              void window.codezy.app.openTerminal(s.activeId ?? undefined).then((err) => {
+                if (err) s.addNotice(err, 'error')
+              })
+            }}
+          >
+            <IconTerminal className="icon" />
+            Open terminal interface
+          </div>
+        )}
 
         <div className="side-item" onClick={() => s.setSettingsOpen(true)}>
           <IconUser className="icon" />

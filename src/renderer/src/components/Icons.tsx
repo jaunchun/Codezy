@@ -28,6 +28,15 @@ export const IconChat = (p: P) => (
   </svg>
 )
 
+/** v3.1.7 — the live edit panel: chevrons around a blinking text caret. */
+export const IconLive = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M8 6 4 12l4 6" />
+    <path d="M16 6l4 6-4 6" />
+    <path d="M12 5v14" />
+  </svg>
+)
+
 export const IconPlus = (p: P) => (
   <svg {...base(p)}>
     <path d="M12 5v14M5 12h14" />
@@ -227,6 +236,15 @@ export const IconDuplicate = (p: P) => (
   <svg {...base(p)}>
     <rect x="8.5" y="8.5" width="12" height="12" rx="2" />
     <path d="M15.5 4.5H5.5a2 2 0 0 0-2 2v10" />
+  </svg>
+)
+
+/** The live site preview: a window with a page inside. */
+export const IconPreview = (p: P) => (
+  <svg {...base(p)}>
+    <rect x="3" y="4.5" width="18" height="13" rx="2" />
+    <path d="M8.5 20.5h7M12 17.5v3" />
+    <path d="M7 12l3-3 2.5 2.5L15 9l3 3" />
   </svg>
 )
 
