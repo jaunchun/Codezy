@@ -190,6 +190,7 @@ foreach ($n in 1..52) {
 * **Unified CLI REPL:** `codezy` now launches directly into the interactive agent REPL with four switchable modes (`chat`, `agent`, `plan`, `auto`), a project-focused home banner, and a `nanospinner` live phase indicator.
 * **Interactive CLI `/settings`:** Numbered rows let you toggle themes, models, modes, and approvals directly in the terminal while staying read-only when piped.
 * **Bundled Desktop Terminal:** Clicking **Open terminal interface** now launches the bundled `index.mjs` REPL out of the box without requiring a global `npm` install.
+* i just wanted to make a commit from my other account ;) 
 
 <details>
 <summary><strong>View Previous Releases (3.1.7 – 2.3.0)</strong></summary>
